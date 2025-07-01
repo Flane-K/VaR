@@ -176,19 +176,27 @@ def load_market_data(symbols_list, start_date, end_date):
             st.info(f"No data found for symbols: {', '.join(symbols_list)} in the specified date range.")
             return None
 
-        # Check for 'Adj Close' column presence
+        # Check for 'Adj Close' column presence and use it
         if isinstance(data.columns, pd.MultiIndex):
-            # For multiple symbols, check if 'Adj Close' is in the first level of the MultiIndex
-            if 'Adj Close' not in data.columns.get_level_values(0):
-                st.error(f"Error: 'Adj Close' column not found in data for {', '.join(symbols_list)}. Data columns: {data.columns.get_level_values(0).unique().tolist()}")
+            # For multiple symbols
+            if 'Adj Close' in data.columns.get_level_values(0):
+                return data['Adj Close']
+            elif 'Close' in data.columns.get_level_values(0):
+                st.warning(f"'Adj Close' not found for {', '.join(symbols_list)}. Using 'Close' prices instead.")
+                return data['Close']
+            else:
+                st.error(f"Error: Neither 'Adj Close' nor 'Close' columns found in data for {', '.join(symbols_list)}. Available columns: {data.columns.get_level_values(0).unique().tolist()}")
                 return None
-            return data['Adj Close']
         else:
-            # For a single symbol, check if 'Adj Close' is a direct column
-            if 'Adj Close' not in data.columns:
-                st.error(f"Error: 'Adj Close' column not found in data for {', '.join(symbols_list)}. Data columns: {data.columns.tolist()}")
+            # For a single symbol
+            if 'Adj Close' in data.columns:
+                return data[['Adj Close']] # Ensure it's a DataFrame
+            elif 'Close' in data.columns:
+                st.warning(f"'Adj Close' not found for {', '.join(symbols_list)}. Using 'Close' prices instead.")
+                return data[['Close']] # Ensure it's a DataFrame
+            else:
+                st.error(f"Error: Neither 'Adj Close' nor 'Close' columns found in data for {', '.join(symbols_list)}. Available columns: {data.columns.tolist()}")
                 return None
-            return data[['Adj Close']] # Ensure it's a DataFrame
     except Exception as e:
         # Catch broader errors from yf.download or initial processing
         st.error(f"An unexpected error occurred while loading data from Yahoo Finance for {', '.join(symbols_list)}: {str(e)}")
@@ -895,7 +903,6 @@ with tab7:
                 'Expected Shortfall': current_es,
                 'Volatility (%)': portfolio_returns.std() * np.sqrt(252) * 100,
                 'Sharpe Ratio': (portfolio_returns.mean() * 252 - 0.02) / (portfolio_returns.std() * np.sqrt(252)), # Assuming 2% risk-free
-                'Max Drawdown (%)': max_drawdown_val,
                 'Skewness': portfolio_returns.skew(),
                 'Kurtosis': portfolio_returns.kurtosis()
             }
