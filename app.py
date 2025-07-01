@@ -171,14 +171,27 @@ def load_market_data(symbols_list, start_date, end_date):
         return None
     try:
         data = yf.download(symbols_list, start=start_date, end=end_date)
+
+        if data.empty:
+            st.info(f"No data found for symbols: {', '.join(symbols_list)} in the specified date range.")
+            return None
+
+        # Check for 'Adj Close' column presence
         if isinstance(data.columns, pd.MultiIndex):
-            # For multiple symbols, Adj Close is a multi-level column
+            # For multiple symbols, check if 'Adj Close' is in the first level of the MultiIndex
+            if 'Adj Close' not in data.columns.get_level_values(0):
+                st.error(f"Error: 'Adj Close' column not found in data for {', '.join(symbols_list)}. Data columns: {data.columns.get_level_values(0).unique().tolist()}")
+                return None
             return data['Adj Close']
         else:
-            # For a single symbol, 'Adj Close' is a direct column
+            # For a single symbol, check if 'Adj Close' is a direct column
+            if 'Adj Close' not in data.columns:
+                st.error(f"Error: 'Adj Close' column not found in data for {', '.join(symbols_list)}. Data columns: {data.columns.tolist()}")
+                return None
             return data[['Adj Close']] # Ensure it's a DataFrame
     except Exception as e:
-        st.error(f"Error loading data from Yahoo Finance: {str(e)}")
+        # Catch broader errors from yf.download or initial processing
+        st.error(f"An unexpected error occurred while loading data from Yahoo Finance for {', '.join(symbols_list)}: {str(e)}")
         return None
 
 # Function to load data from uploaded file
@@ -317,7 +330,7 @@ with tab1:
         
         with col1:
             current_var = st.session_state.var_engines.calculate_parametric_var(
-                portfolio_returns, confidence_level, time_horizon
+                portfolio_returns, confidence_level, time_horizon, cornish_fisher # Pass cornish_fisher
             )
             st.metric("VaR (95%)", f"${current_var:,.2f}", delta=None)
         
@@ -433,9 +446,9 @@ with tab2:
                 )
                 var_results['GARCH'] = calculated_var_value
             elif var_model == "Extreme Value Theory":
-                 # Assuming a placeholder for EVT, as it's not implemented in var_engines based on code snippet
-                st.warning("Extreme Value Theory (EVT) VaR calculation is not yet implemented.")
-                calculated_var_value = 0.0 # Placeholder
+                calculated_var_value = st.session_state.var_engines.calculate_evt_var( # Corrected method call
+                    portfolio_returns, confidence_level
+                )
                 var_results['EVT'] = calculated_var_value
 
             # Display results
@@ -468,7 +481,7 @@ with tab2:
         if not portfolio_returns.empty:
             try:
                 all_var_results['Parametric'] = st.session_state.var_engines.calculate_parametric_var(
-                    portfolio_returns, confidence_level, time_horizon
+                    portfolio_returns, confidence_level, time_horizon, False # Default False for comparison
                 )
             except Exception as e:
                 all_var_results['Parametric'] = f"Error: {e}"
@@ -484,6 +497,18 @@ with tab2:
                 )
             except Exception as e:
                 all_var_results['Monte Carlo'] = f"Error: {e}"
+            try:
+                all_var_results['GARCH'] = st.session_state.var_engines.calculate_garch_var( # Add GARCH to comparison
+                    portfolio_returns, confidence_level, time_horizon, garch_p, garch_q
+                )
+            except Exception as e:
+                all_var_results['GARCH'] = f"Error: {e}"
+            try:
+                all_var_results['EVT'] = st.session_state.var_engines.calculate_evt_var( # Add EVT to comparison
+                    portfolio_returns, confidence_level
+                )
+            except Exception as e:
+                all_var_results['EVT'] = f"Error: {e}"
         
             # Display comparison
             comparison_df = pd.DataFrame(list(all_var_results.items()), columns=['Method', 'VaR'])
@@ -512,34 +537,46 @@ with tab3:
             
             # Perform backtesting
             try:
-                backtest_results = st.session_state.backtesting.perform_backtesting(
-                    portfolio_returns, confidence_level, backtest_window, var_method
-                )
-                
-                # Display Kupiec test results
-                st.metric("Kupiec Test p-value", f"{backtest_results['kupiec_pvalue']:.4f}")
-                st.metric("Actual Violations", f"{backtest_results['violations']}")
-                st.metric("Expected Violations", f"{backtest_results['expected_violations']:.1f}")
-                
-                # Basel Traffic Light
-                st.subheader("🚦 Basel Traffic Light System")
-                traffic_light = st.session_state.backtesting.basel_traffic_light(
-                    backtest_results['violations'], backtest_results['expected_violations']
-                )
-                
-                if traffic_light == 'Green':
-                    st.success("✅ Green Zone - Model performs well")
-                elif traffic_light == 'Yellow':
-                    st.warning("⚠️ Yellow Zone - Model needs attention")
+                # Ensure the backtesting function correctly handles the method names
+                if var_method == "Parametric":
+                    var_func = lambda ret, conf, horizon: st.session_state.var_engines.calculate_parametric_var(ret, conf, horizon, False) # Explicitly pass False for Cornish Fisher
+                elif var_method == "Historical":
+                    var_func = st.session_state.var_engines.calculate_historical_var
+                elif var_method == "Monte Carlo":
+                    var_func = st.session_state.var_engines.calculate_monte_carlo_var
                 else:
-                    st.error("🔴 Red Zone - Model requires immediate review")
-                
-                # Violation plot
-                st.subheader("📈 VaR Violations Over Time")
-                fig = st.session_state.visualization.plot_var_violations(
-                    portfolio_returns, backtest_results['var_estimates'], backtest_results['violations_dates']
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                    st.error("Invalid VaR method selected for backtesting.")
+                    var_func = None
+
+                if var_func:
+                    backtest_results = st.session_state.backtesting.perform_backtesting(
+                        portfolio_returns, confidence_level, backtest_window, var_func
+                    )
+                    
+                    # Display Kupiec test results
+                    st.metric("Kupiec Test p-value", f"{backtest_results['kupiec_pvalue']:.4f}")
+                    st.metric("Actual Violations", f"{backtest_results['violations']}")
+                    st.metric("Expected Violations", f"{backtest_results['expected_violations']:.1f}")
+                    
+                    # Basel Traffic Light
+                    st.subheader("🚦 Basel Traffic Light System")
+                    traffic_light = st.session_state.backtesting.basel_traffic_light(
+                        backtest_results['violations'], backtest_results['expected_violations']
+                    )
+                    
+                    if traffic_light == 'Green':
+                        st.success("✅ Green Zone - Model performs well")
+                    elif traffic_light == 'Yellow':
+                        st.warning("⚠️ Yellow Zone - Model needs attention")
+                    else:
+                        st.error("🔴 Red Zone - Model requires immediate review")
+                    
+                    # Violation plot
+                    st.subheader("📈 VaR Violations Over Time")
+                    fig = st.session_state.visualization.plot_var_violations(
+                        portfolio_returns, backtest_results['var_estimates'], backtest_results['violations_dates']
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
             except Exception as e:
                 st.error(f"Error during backtesting: {e}. Please ensure sufficient data for the selected window.")
     else:
@@ -593,7 +630,7 @@ with tab4:
             try:
                 if scenario == "Normal":
                     var_val = st.session_state.var_engines.calculate_parametric_var(
-                        portfolio_returns, confidence_level, time_horizon
+                        portfolio_returns, confidence_level, time_horizon, cornish_fisher # Use current Cornish Fisher setting
                     )
                 else:
                     stress_result = st.session_state.stress_testing.run_stress_test(
@@ -639,6 +676,7 @@ with tab5:
         # Perform rolling analysis
         if analysis_type == "Rolling VaR":
             st.subheader("📊 Rolling VaR Analysis")
+            # Ensure calculate_rolling_var can take the cornish_fisher flag if needed, or default
             rolling_var = st.session_state.rolling_analysis.calculate_rolling_var(
                 portfolio_returns, confidence_level, rolling_window
             )
@@ -848,7 +886,7 @@ with tab7:
             
             # Generate summary metrics
             # Ensure all_var_results is defined, or calculate what's needed
-            current_parametric_var = st.session_state.var_engines.calculate_parametric_var(portfolio_returns, 0.95, 1)
+            current_parametric_var = st.session_state.var_engines.calculate_parametric_var(portfolio_returns, 0.95, 1, cornish_fisher) # Pass cornish_fisher
             current_es = st.session_state.var_engines.calculate_expected_shortfall(portfolio_returns, 0.95)
             max_drawdown_val = st.session_state.rolling_analysis.calculate_drawdown(portfolio_returns).min() * 100 if not portfolio_returns.empty else 0
 
@@ -911,7 +949,7 @@ with tab7:
         
         with col2:
             if st.button("Export Price Data"):
-                if market_data is not None and not market_data.empty:
+                if market_data is not None and not market_data.empty: # Added .empty check
                     csv_prices = market_data.to_csv()
                     st.download_button(
                         label="Download Price Data",
