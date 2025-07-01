@@ -164,109 +164,117 @@ def load_market_data(symbols, start_date, end_date):
         st.error(f"Error loading data: {str(e)}")
         return None
 
+# Initialize variables to avoid NameError
+market_data = None
+returns = None
+portfolio_returns = None
+
+# Load data if using live market data
+if data_source == "Live Market Data":
+    market_data = load_market_data(symbols_list, start_date, end_date)
+    
+    if market_data is not None:
+        # Calculate returns
+        returns = market_data.pct_change().dropna()
+        
+        # Portfolio returns (if multi-asset)
+        if portfolio_type == "Multi-Asset":
+            portfolio_returns = returns.dot(list(weights.values()))
+        else:
+            portfolio_returns = returns.iloc[:, 0]
+
 # Dashboard Tab
 with tab1:
     st.header("📊 Risk Dashboard")
     
-    if data_source == "Live Market Data":
-        # Load market data
-        market_data = load_market_data(symbols_list, start_date, end_date)
+    if data_source == "Live Market Data" and market_data is not None:
+        # Key Metrics
+        col1, col2, col3, col4 = st.columns(4)
         
-        if market_data is not None:
-            # Calculate returns
-            returns = market_data.pct_change().dropna()
-            
-            # Portfolio returns (if multi-asset)
-            if portfolio_type == "Multi-Asset":
-                portfolio_returns = returns.dot(list(weights.values()))
-            else:
-                portfolio_returns = returns.iloc[:, 0]
-            
-            # Key Metrics
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                current_var = st.session_state.var_engines.calculate_parametric_var(
-                    portfolio_returns, confidence_level, time_horizon
-                )
-                st.metric("VaR (95%)", f"${current_var:,.2f}", delta=None)
-            
-            with col2:
-                expected_shortfall = st.session_state.var_engines.calculate_expected_shortfall(
-                    portfolio_returns, confidence_level
-                )
-                st.metric("Expected Shortfall", f"${expected_shortfall:,.2f}", delta=None)
-            
-            with col3:
-                volatility = portfolio_returns.std() * np.sqrt(252) * 100
-                st.metric("Annual Volatility", f"{volatility:.2f}%", delta=None)
-            
-            with col4:
-                sharpe_ratio = (portfolio_returns.mean() * 252) / (portfolio_returns.std() * np.sqrt(252))
-                st.metric("Sharpe Ratio", f"{sharpe_ratio:.3f}", delta=None)
-            
-            # Portfolio Performance Chart
-            st.subheader("📈 Portfolio Performance")
-            cumulative_returns = (1 + portfolio_returns).cumprod()
+        with col1:
+            current_var = st.session_state.var_engines.calculate_parametric_var(
+                portfolio_returns, confidence_level, time_horizon
+            )
+            st.metric("VaR (95%)", f"${current_var:,.2f}", delta=None)
+        
+        with col2:
+            expected_shortfall = st.session_state.var_engines.calculate_expected_shortfall(
+                portfolio_returns, confidence_level
+            )
+            st.metric("Expected Shortfall", f"${expected_shortfall:,.2f}", delta=None)
+        
+        with col3:
+            volatility = portfolio_returns.std() * np.sqrt(252) * 100
+            st.metric("Annual Volatility", f"{volatility:.2f}%", delta=None)
+        
+        with col4:
+            sharpe_ratio = (portfolio_returns.mean() * 252) / (portfolio_returns.std() * np.sqrt(252))
+            st.metric("Sharpe Ratio", f"{sharpe_ratio:.3f}", delta=None)
+        
+        # Portfolio Performance Chart
+        st.subheader("📈 Portfolio Performance")
+        cumulative_returns = (1 + portfolio_returns).cumprod()
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=cumulative_returns.index,
+            y=cumulative_returns.values,
+            mode='lines',
+            name='Cumulative Returns',
+            line=dict(color='#00ff88', width=2)
+        ))
+        
+        fig.update_layout(
+            title="Portfolio Cumulative Returns",
+            xaxis_title="Date",
+            yaxis_title="Cumulative Return",
+            template="plotly_dark",
+            height=500
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Returns Distribution
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("📊 Returns Distribution")
+            fig = px.histogram(
+                x=portfolio_returns.values,
+                nbins=50,
+                title="Daily Returns Distribution",
+                template="plotly_dark"
+            )
+            fig.update_traces(marker_color='#ff6b6b')
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            st.subheader("📈 Risk Metrics Over Time")
+            rolling_vol = portfolio_returns.rolling(30).std() * np.sqrt(252) * 100
             
             fig = go.Figure()
             fig.add_trace(go.Scatter(
-                x=cumulative_returns.index,
-                y=cumulative_returns.values,
+                x=rolling_vol.index,
+                y=rolling_vol.values,
                 mode='lines',
-                name='Cumulative Returns',
-                line=dict(color='#00ff88', width=2)
+                name='30-Day Rolling Volatility',
+                line=dict(color='#4ecdc4', width=2)
             ))
             
             fig.update_layout(
-                title="Portfolio Cumulative Returns",
+                title="Rolling 30-Day Volatility (%)",
                 xaxis_title="Date",
-                yaxis_title="Cumulative Return",
-                template="plotly_dark",
-                height=500
+                yaxis_title="Volatility (%)",
+                template="plotly_dark"
             )
             st.plotly_chart(fig, use_container_width=True)
-            
-            # Returns Distribution
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("📊 Returns Distribution")
-                fig = px.histogram(
-                    x=portfolio_returns.values,
-                    nbins=50,
-                    title="Daily Returns Distribution",
-                    template="plotly_dark"
-                )
-                fig.update_traces(marker_color='#ff6b6b')
-                st.plotly_chart(fig, use_container_width=True)
-            
-            with col2:
-                st.subheader("📈 Risk Metrics Over Time")
-                rolling_vol = portfolio_returns.rolling(30).std() * np.sqrt(252) * 100
-                
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=rolling_vol.index,
-                    y=rolling_vol.values,
-                    mode='lines',
-                    name='30-Day Rolling Volatility',
-                    line=dict(color='#4ecdc4', width=2)
-                ))
-                
-                fig.update_layout(
-                    title="Rolling 30-Day Volatility (%)",
-                    xaxis_title="Date",
-                    yaxis_title="Volatility (%)",
-                    template="plotly_dark"
-                )
-                st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Please select 'Live Market Data' and ensure symbols are loaded to view the dashboard.")
 
 # VaR Calculator Tab
 with tab2:
     st.header("🧮 VaR Calculator")
     
-    if data_source == "Live Market Data" and 'market_data' in locals():
+    if data_source == "Live Market Data" and portfolio_returns is not None:
         col1, col2 = st.columns(2)
         
         with col1:
@@ -329,12 +337,14 @@ with tab2:
         # Display comparison
         comparison_df = pd.DataFrame(list(all_var_results.items()), columns=['Method', 'VaR'])
         st.dataframe(comparison_df, use_container_width=True)
+    else:
+        st.info("Please load market data first to calculate VaR.")
 
 # Backtesting Tab
 with tab3:
     st.header("🧪 Backtesting & Validation")
     
-    if data_source == "Live Market Data" and 'portfolio_returns' in locals():
+    if data_source == "Live Market Data" and portfolio_returns is not None:
         
         # Backtesting parameters
         col1, col2 = st.columns(2)
@@ -376,6 +386,8 @@ with tab3:
             portfolio_returns, backtest_results['var_estimates'], backtest_results['violations_dates']
         )
         st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Please load market data first to perform backtesting.")
 
 # Scenario & Stress Tab
 with tab4:
@@ -399,7 +411,7 @@ with tab4:
     with col2:
         st.subheader("📈 Stress Test Results")
         
-        if data_source == "Live Market Data" and 'portfolio_returns' in locals():
+        if data_source == "Live Market Data" and portfolio_returns is not None:
             # Perform stress testing
             stress_results = st.session_state.stress_testing.run_stress_test(
                 portfolio_returns, scenario_type, confidence_level
@@ -408,9 +420,11 @@ with tab4:
             st.metric("Stressed VaR", f"${stress_results['stressed_var']:,.2f}")
             st.metric("VaR Increase", f"{stress_results['var_increase']:.1f}%")
             st.metric("Worst Case Loss", f"${stress_results['worst_case']:,.2f}")
+        else:
+            st.info("Please load market data first to perform stress testing.")
     
     # Scenario comparison
-    if data_source == "Live Market Data" and 'portfolio_returns' in locals():
+    if data_source == "Live Market Data" and portfolio_returns is not None:
         st.subheader("📊 Scenario Comparison")
         
         scenarios = ["Normal", "2008 Crisis", "COVID-19", "Dot-com Crash"]
@@ -442,7 +456,7 @@ with tab4:
 with tab5:
     st.header("📈 Rolling Analysis")
     
-    if data_source == "Live Market Data" and 'portfolio_returns' in locals():
+    if data_source == "Live Market Data" and portfolio_returns is not None:
         
         # Rolling analysis parameters
         col1, col2 = st.columns(2)
@@ -528,7 +542,7 @@ with tab5:
         
         # Correlation heatmap
         st.subheader("🔥 Correlation Heatmap")
-        if portfolio_type == "Multi-Asset":
+        if portfolio_type == "Multi-Asset" and returns is not None:
             corr_matrix = returns.corr()
             fig = px.imshow(
                 corr_matrix,
@@ -539,6 +553,8 @@ with tab5:
             )
             fig.update_layout(title="Asset Correlation Matrix")
             st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Please load market data first to perform rolling analysis.")
 
 # Options VaR Tab
 with tab6:
@@ -620,12 +636,14 @@ with tab6:
                 showlegend=False
             )
             st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Please select 'Options Portfolio' in the sidebar to access options VaR calculations.")
 
 # Reports & Exports Tab
 with tab7:
     st.header("📄 Reports & Exports")
     
-    if data_source == "Live Market Data" and 'portfolio_returns' in locals():
+    if data_source == "Live Market Data" and portfolio_returns is not None:
         
         # Report generation options
         col1, col2 = st.columns(2)
@@ -722,7 +740,7 @@ with tab7:
         
         with col2:
             if st.button("Export Price Data"):
-                if 'market_data' in locals():
+                if market_data is not None:
                     csv_prices = market_data.to_csv()
                     st.download_button(
                         label="Download Price Data",
@@ -730,6 +748,8 @@ with tab7:
                         file_name=f"price_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                         mime="text/csv"
                     )
+    else:
+        st.info("Please load market data first to generate reports.")
 
 # Footer
 st.markdown("---")
