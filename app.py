@@ -180,7 +180,7 @@ def load_market_data(symbols_list, start_date, end_date):
         if isinstance(data.columns, pd.MultiIndex):
             # For multiple symbols
             if 'Adj Close' in data.columns.get_level_values(0):
-                return data['Adj Close']
+                return data['Close']
             elif 'Close' in data.columns.get_level_values(0):
                 st.warning(f"'Adj Close' not found for {', '.join(symbols_list)}. Using 'Close' prices instead.")
                 return data['Close']
@@ -190,7 +190,7 @@ def load_market_data(symbols_list, start_date, end_date):
         else:
             # For a single symbol
             if 'Adj Close' in data.columns:
-                return data[['Adj Close']] # Ensure it's a DataFrame
+                return data[['Close']] # Ensure it's a DataFrame
             elif 'Close' in data.columns:
                 st.warning(f"'Adj Close' not found for {', '.join(symbols_list)}. Using 'Close' prices instead.")
                 return data[['Close']] # Ensure it's a DataFrame
