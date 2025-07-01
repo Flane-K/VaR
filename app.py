@@ -176,26 +176,27 @@ def load_market_data(symbols_list, start_date, end_date):
             st.info(f"No data found for symbols: {', '.join(symbols_list)} in the specified date range.")
             return None
 
-        # Check for 'Adj Close' column presence and use it
-        if isinstance(data.columns, pd.MultiIndex):
-            # For multiple symbols
-            if 'Adj Close' in data.columns.get_level_values(0):
-                return data['Close']
-            elif 'Close' in data.columns.get_level_values(0):
-                st.warning(f"'Adj Close' not found for {', '.join(symbols_list)}. Using 'Close' prices instead.")
-                return data['Close']
+        # Attempt to get 'Adj Close' first
+        try:
+            if isinstance(data.columns, pd.MultiIndex):
+                # For multiple symbols, data['Adj Close'] returns a DataFrame with symbols as columns
+                return data['Adj Close']
             else:
-                st.error(f"Error: Neither 'Adj Close' nor 'Close' columns found in data for {', '.join(symbols_list)}. Available columns: {data.columns.get_level_values(0).unique().tolist()}")
-                return None
-        else:
-            # For a single symbol
-            if 'Adj Close' in data.columns:
-                return data[['Close']] # Ensure it's a DataFrame
-            elif 'Close' in data.columns:
-                st.warning(f"'Adj Close' not found for {', '.join(symbols_list)}. Using 'Close' prices instead.")
-                return data[['Close']] # Ensure it's a DataFrame
-            else:
-                st.error(f"Error: Neither 'Adj Close' nor 'Close' columns found in data for {', '.join(symbols_list)}. Available columns: {data.columns.tolist()}")
+                # For a single symbol, data['Adj Close'] returns a Series, convert to DataFrame
+                return data[['Adj Close']]
+        except KeyError:
+            # If 'Adj Close' not found, try 'Close' as a fallback
+            try:
+                if isinstance(data.columns, pd.MultiIndex):
+                    st.warning(f"'Adj Close' not found for {', '.join(symbols_list)}. Using 'Close' prices instead.")
+                    return data['Close']
+                else:
+                    st.warning(f"'Adj Close' not found for {', '.join(symbols_list)}. Using 'Close' prices instead.")
+                    return data[['Close']] # Ensure it's a DataFrame
+            except KeyError:
+                # If neither is found
+                available_columns = data.columns.get_level_values(0).unique().tolist() if isinstance(data.columns, pd.MultiIndex) else data.columns.tolist()
+                st.error(f"Error: Neither 'Adj Close' nor 'Close' columns found in data for {', '.join(symbols_list)}. Available top-level columns: {available_columns}")
                 return None
     except Exception as e:
         # Catch broader errors from yf.download or initial processing
