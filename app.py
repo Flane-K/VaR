@@ -9,7 +9,7 @@ from plotly.subplots import make_subplots
 import warnings
 warnings.filterwarnings('ignore')
 
-# Import custom modules (assuming these exist and work correctly)
+# Import custom modules
 from src.data_ingestion import DataIngestion
 from src.var_engines import VaREngines
 from src.backtesting import Backtesting
@@ -52,6 +52,13 @@ st.markdown("""
         font-weight: bold;
         margin: 1rem 0 0.5rem 0;
     }
+    .help-section {
+        background-color: #1e1e1e;
+        padding: 1rem;
+        border-radius: 8px;
+        border-left: 4px solid #4CAF50;
+        margin: 1rem 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -73,6 +80,34 @@ if 'visualization' not in st.session_state:
 if 'utils' not in st.session_state:
     st.session_state.utils = Utils()
 
+# Function to generate synthetic data
+def generate_synthetic_data(num_days=500, initial_price=100, annual_return=0.08, annual_volatility=0.20):
+    """Generate synthetic stock data with realistic characteristics"""
+    np.random.seed(42)
+    
+    # Daily parameters
+    daily_return = annual_return / 252
+    daily_volatility = annual_volatility / np.sqrt(252)
+    
+    # Generate returns using geometric Brownian motion
+    returns = np.random.normal(daily_return, daily_volatility, num_days)
+    
+    # Generate price series
+    prices = [initial_price]
+    for ret in returns:
+        prices.append(prices[-1] * (1 + ret))
+    
+    # Create date index
+    start_date = datetime.now() - timedelta(days=num_days)
+    dates = pd.date_range(start=start_date, periods=num_days+1, freq='D')
+    
+    # Create DataFrame
+    df = pd.DataFrame({
+        'Price': prices
+    }, index=dates)
+    
+    return df
+
 # Sidebar Controls
 with st.sidebar:
     st.title("🔧 Risk Analytics Controls")
@@ -89,23 +124,78 @@ with st.sidebar:
     st.markdown('<div class="sidebar-header">💼 Portfolio Settings</div>', unsafe_allow_html=True)
     portfolio_type = st.selectbox(
         "Portfolio Type",
-        ["Single Asset", "Multi-Asset", "Options Portfolio"],
+        ["Single Asset", "Multi-Asset", "Crypto Portfolio", "Options Portfolio"],
         key="portfolio_type"
     )
     
-    symbols_list = [] # Initialize symbols_list
+    # Initialize variables
+    symbols_list = []
+    crypto_symbols = []
+    
     if data_source == "Live Market Data":
         if portfolio_type == "Single Asset":
             symbols = st.text_input("Enter symbol", "AAPL")
-        else:  
+            symbols_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+        elif portfolio_type == "Multi-Asset":
             symbols = st.text_input("Enter symbols (comma-separated)", "AAPL,GOOGL,MSFT,TSLA")
-        symbols_list = [s.strip().upper() for s in symbols.split(",")]
+            symbols_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+            
+            # Crypto section for multi-asset
+            st.markdown("**Crypto Assets (Optional)**")
+            crypto_input = st.text_input("Enter crypto symbols (e.g., BTC-USD,ETH-USD)", "")
+            if crypto_input.strip():
+                crypto_symbols = [s.strip().upper() for s in crypto_input.split(",") if s.strip()]
+                # Add crypto symbols to main symbols list
+                symbols_list.extend(crypto_symbols)
+        elif portfolio_type == "Crypto Portfolio":
+            crypto_symbols_input = st.text_input("Enter crypto symbols", "BTC-USD")
+            symbols_list = [s.strip().upper() for s in crypto_symbols_input.split(",") if s.strip()]
+        elif portfolio_type == "Options Portfolio":
+            st.info("Options data will be configured in the Options VaR tab")
+            underlying_symbol = st.text_input("Underlying Asset", "AAPL")
+            symbols_list = [underlying_symbol.strip().upper()] if underlying_symbol.strip() else []
+            
     elif data_source == "CSV/XLSX Upload":
         uploaded_file = st.file_uploader("Upload CSV/XLSX file", type=["csv", "xlsx"])
+        st.markdown("""
+        **File Format Requirements:**
+        - First column: Date (YYYY-MM-DD format)
+        - Subsequent columns: Asset prices
+        - Header row with asset names
+        - No missing values in price data
+        """)
+        
     elif data_source == "Manual Entry":
         st.subheader("Manual Data Entry")
-        manual_data_input = st.text_area("Enter historical prices (Date, Price per line)",
-                                        "2023-01-01,100\n2023-01-02,101\n2023-01-03,102")
+        
+        # Option to use default data or generate custom
+        use_default = st.selectbox(
+            "Data Generation",
+            ["Use Default Data", "Generate Custom Data"]
+        )
+        
+        if use_default == "Use Default Data":
+            # Generate default synthetic data
+            default_data = generate_synthetic_data()
+            manual_data_input = "\n".join([f"{date.strftime('%Y-%m-%d')},{price:.2f}" 
+                                         for date, price in zip(default_data.index, default_data['Price'])])
+            st.text_area("Generated Data (Date, Price per line)", manual_data_input, height=150, disabled=True)
+        else:
+            # Custom data generation parameters
+            st.markdown("**Custom Data Parameters**")
+            num_days = st.number_input("Number of Days", 100, 1000, 500)
+            initial_price = st.number_input("Initial Price ($)", 10.0, 1000.0, 100.0)
+            annual_return = st.slider("Annual Return (%)", -20, 30, 8) / 100
+            annual_volatility = st.slider("Annual Volatility (%)", 5, 50, 20) / 100
+            
+            if st.button("Generate Data"):
+                custom_data = generate_synthetic_data(num_days, initial_price, annual_return, annual_volatility)
+                manual_data_input = "\n".join([f"{date.strftime('%Y-%m-%d')},{price:.2f}" 
+                                             for date, price in zip(custom_data.index, custom_data['Price'])])
+            else:
+                manual_data_input = "2023-01-01,100\n2023-01-02,101\n2023-01-03,102"
+            
+            st.text_area("Manual Data Entry (Date, Price per line)", manual_data_input, height=150, key="manual_input")
     
     # VaR Model Selection
     st.markdown('<div class="sidebar-header">⚙️ VaR Model</div>', unsafe_allow_html=True)
@@ -144,11 +234,11 @@ with st.sidebar:
     cornish_fisher = st.checkbox("Apply Cornish-Fisher Adjustment")
     
     # Portfolio Weights (for multi-asset)
-    weights = {} # Initialize weights
-    if portfolio_type == "Multi-Asset" and data_source == "Live Market Data" and symbols_list:
+    weights = {}
+    if portfolio_type in ["Multi-Asset", "Crypto Portfolio"] and data_source == "Live Market Data" and symbols_list:
         st.markdown('<div class="sidebar-header">⚖️ Portfolio Weights</div>', unsafe_allow_html=True)
         for symbol in symbols_list:
-            weights[symbol] = st.slider(f"{symbol} Weight", 0.0, 1.0, 1.0/len(symbols_list))
+            weights[symbol] = st.slider(f"{symbol} Weight", 0.0, 1.0, 1.0/len(symbols_list), key=f"weight_{symbol}")
         
         # Normalize weights
         total_weight = sum(weights.values())
@@ -156,24 +246,25 @@ with st.sidebar:
             weights = {k: v/total_weight for k, v in weights.items()}
         else:
             st.warning("Total weight is zero. Please adjust weights.")
-            weights = {s: 1.0/len(symbols_list) for s in symbols_list} # Default to equal weights if total is 0
+            weights = {s: 1.0/len(symbols_list) for s in symbols_list}
 
 # Main Content Area
 st.title("📊 VaR & Risk Analytics Platform")
 
 # Tab Navigation
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "🏠 Dashboard", 
     "🧮 VaR Calculator", 
     "🧪 Backtest & Validate", 
     "⚡ Scenario & Stress", 
     "📈 Rolling Analysis", 
     "📊 Option VaR", 
-    "📄 Reports & Exports"
+    "📄 Reports & Exports",
+    "❓ Help & Guide"
 ])
 
 # Load data based on source
-@st.cache_data(ttl=3600) # Cache for 1 hour to reduce API calls
+@st.cache_data(ttl=3600)
 def load_market_data(symbols_list, start_date, end_date):
     if not symbols_list:
         return None
@@ -186,7 +277,6 @@ def load_market_data(symbols_list, start_date, end_date):
 
         # Handle both single and multiple symbols
         if len(symbols_list) == 1:
-            # For single symbol, yfinance returns a DataFrame with columns like 'Open', 'High', etc.
             if 'Adj Close' in data.columns:
                 return data[['Adj Close']].rename(columns={'Adj Close': symbols_list[0]})
             elif 'Close' in data.columns:
@@ -196,7 +286,6 @@ def load_market_data(symbols_list, start_date, end_date):
                 st.error(f"Neither 'Adj Close' nor 'Close' found for {symbols_list[0]}")
                 return None
         else:
-            # For multiple symbols, data has MultiIndex columns
             try:
                 if 'Adj Close' in data.columns.get_level_values(0):
                     return data['Adj Close']
@@ -208,7 +297,6 @@ def load_market_data(symbols_list, start_date, end_date):
                     st.error(f"Neither 'Adj Close' nor 'Close' found. Available columns: {available_columns}")
                     return None
             except AttributeError:
-                # Fallback for unexpected data structure
                 st.error("Unexpected data structure from yfinance")
                 return None
                 
@@ -216,17 +304,14 @@ def load_market_data(symbols_list, start_date, end_date):
         st.error(f"An unexpected error occurred while loading data from Yahoo Finance: {str(e)}")
         return None
 
-# Function to load data from uploaded file
 @st.cache_data
 def load_uploaded_file_data(uploaded_file):
     try:
         if uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file, index_col=0, parse_dates=True)
-        else: # Assuming .xlsx
+        else:
             df = pd.read_excel(uploaded_file, index_col=0, parse_dates=True)
         
-        # Ensure the DataFrame has a numeric column for prices
-        # Assuming the first numeric column after date is the price
         numeric_cols = df.select_dtypes(include=np.number).columns
         if not numeric_cols.empty:
             return df[numeric_cols]
@@ -237,7 +322,6 @@ def load_uploaded_file_data(uploaded_file):
         st.error(f"Error reading uploaded file: {str(e)}")
         return None
 
-# Function to load data from manual entry
 @st.cache_data
 def load_manual_data(manual_data_input):
     try:
@@ -251,45 +335,31 @@ def load_manual_data(manual_data_input):
         st.error(f"Error parsing manual data: {str(e)}. Please ensure format is 'YYYY-MM-DD,Price'.")
         return None
 
-# Initialize variables to avoid NameError
+# Initialize variables
 market_data = None
 returns = None
 portfolio_returns = None
 
-# --- Data Loading Logic ---
+# Data Loading Logic
 if data_source == "Live Market Data":
     if symbols_list:
         market_data = load_market_data(symbols_list, start_date, end_date)
         if market_data is not None and not market_data.empty:
             returns = market_data.pct_change().dropna()
             
-            if portfolio_type == "Multi-Asset":
-                # Ensure weights match the columns in returns
+            if portfolio_type in ["Multi-Asset", "Crypto Portfolio"]:
                 if all(col in returns.columns for col in weights.keys()):
-                    # Align weights to the returns DataFrame columns
                     aligned_weights = pd.Series(weights).reindex(returns.columns, fill_value=0).values
                     portfolio_returns = returns.dot(aligned_weights)
                 else:
-                    st.warning("Symbols in portfolio weights do not fully match fetched data columns. Using equal weights for available data.")
-                    # Fallback to equal weights for available data
-                    available_symbols = [s for s in symbols_list if s in returns.columns]
-                    if available_symbols:
-                        equal_weight = 1.0 / len(available_symbols)
-                        portfolio_returns = returns[available_symbols].mean(axis=1) # Simple average for now
-                    else:
-                        st.warning("No matching symbols found in fetched data for portfolio construction.")
-                        portfolio_returns = None # No portfolio returns can be calculated
+                    st.warning("Using equal weights for available data.")
+                    portfolio_returns = returns.mean(axis=1)
             elif portfolio_type == "Single Asset":
-                if len(returns.columns) > 0:
-                    portfolio_returns = returns.iloc[:, 0] # Take the first asset's returns
-                else:
-                    st.warning("No data available for single asset portfolio.")
-                    portfolio_returns = None
-            else: # Options Portfolio, data handling will be different
-                portfolio_returns = None # Not directly using market data returns for options VaR
+                portfolio_returns = returns.iloc[:, 0] if len(returns.columns) > 0 else None
+            else:
+                portfolio_returns = None
         else:
             st.info("No market data fetched. Check symbols or date range.")
-            market_data = None # Reset to None if fetching failed
     else:
         st.info("Please enter symbols for Live Market Data.")
 
@@ -300,29 +370,27 @@ elif data_source == "CSV/XLSX Upload":
             market_data = uploaded_df
             returns = market_data.pct_change().dropna()
             
-            if portfolio_type == "Multi-Asset" and len(market_data.columns) > 1:
-                # For multi-asset, use equal weights by default
+            if portfolio_type in ["Multi-Asset", "Crypto Portfolio"] and len(market_data.columns) > 1:
                 portfolio_returns = returns.mean(axis=1)
-            elif portfolio_type == "Single Asset" or len(market_data.columns) == 1:
+            else:
                 portfolio_returns = returns.iloc[:, 0] if len(returns.columns) > 0 else None
-            else: # Options Portfolio
-                portfolio_returns = None
         else:
             st.info("Uploaded file processed, but no valid data found.")
     else:
         st.info("Please upload a CSV/XLSX file.")
 
 elif data_source == "Manual Entry":
-    if 'manual_data_input' in locals() and manual_data_input:
-        manual_df = load_manual_data(manual_data_input)
-        if manual_df is not None and not manual_df.empty:
-            market_data = manual_df
-            returns = market_data.pct_change().dropna()
-            portfolio_returns = returns.iloc[:, 0] if len(returns.columns) > 0 else None
-        else:
-            st.info("No valid manual data entered or parsed.")
+    if use_default == "Use Default Data":
+        manual_df = generate_synthetic_data()
     else:
-        st.info("Please enter data manually.")
+        manual_df = load_manual_data(st.session_state.get('manual_input', manual_data_input))
+    
+    if manual_df is not None and not manual_df.empty:
+        market_data = manual_df
+        returns = market_data.pct_change().dropna()
+        portfolio_returns = returns.iloc[:, 0] if len(returns.columns) > 0 else None
+    else:
+        st.info("No valid manual data entered or parsed.")
 
 # Dashboard Tab
 with tab1:
@@ -345,13 +413,11 @@ with tab1:
             st.metric("Expected Shortfall", f"${expected_shortfall:,.2f}", delta=None)
         
         with col3:
-            # Ensure annualization is correct for daily returns
             volatility = portfolio_returns.std() * np.sqrt(252) * 100
             st.metric("Annual Volatility", f"{volatility:.2f}%", delta=None)
         
         with col4:
-            # Ensure annualization is correct for daily returns
-            risk_free_rate_annual = 0.02 # Assuming a default risk-free rate for Sharpe
+            risk_free_rate_annual = 0.02
             excess_returns = portfolio_returns.mean() * 252 - risk_free_rate_annual
             sharpe_ratio = excess_returns / (portfolio_returns.std() * np.sqrt(252))
             st.metric("Sharpe Ratio", f"{sharpe_ratio:.3f}", delta=None)
@@ -378,7 +444,7 @@ with tab1:
         )
         st.plotly_chart(fig, use_container_width=True)
         
-        # Returns Distribution
+        # Returns Distribution and Rolling Volatility
         col1, col2 = st.columns(2)
         
         with col1:
@@ -413,7 +479,7 @@ with tab1:
             )
             st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("Please load data (Live Market Data, CSV/XLSX, or Manual Entry) to view the dashboard.")
+        st.info("Please load data to view the dashboard.")
 
 # VaR Calculator Tab
 with tab2:
@@ -425,9 +491,8 @@ with tab2:
         with col1:
             st.subheader("📊 VaR Calculation Results")
             
-            # Calculate VaR using selected method
             var_results = {}
-            calculated_var_value = None # To hold the specific VaR value for visualization
+            calculated_var_value = None
             
             if var_model == "Parametric (Delta-Normal)":
                 calculated_var_value = st.session_state.var_engines.calculate_parametric_var(
@@ -455,11 +520,9 @@ with tab2:
                 )
                 var_results['EVT'] = calculated_var_value
 
-            # Display results
             for method, var_value in var_results.items():
                 st.metric(f"{method} VaR", f"${var_value:,.2f}")
             
-            # Expected Shortfall
             es_value = st.session_state.var_engines.calculate_expected_shortfall(
                 portfolio_returns, confidence_level
             )
@@ -468,57 +531,36 @@ with tab2:
         with col2:
             if calculated_var_value is not None:
                 st.subheader("📈 VaR Visualization")
-                
-                # VaR visualization
                 fig = st.session_state.visualization.plot_var_distribution(
                     portfolio_returns, confidence_level, calculated_var_value
                 )
                 st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("Select a VaR model and ensure data is loaded to see visualization.")
         
         # Model Comparison
         st.subheader("🔍 VaR Model Comparison")
-        
-        # Calculate VaR for all relevant models for comparison
         all_var_results = {}
-        if not portfolio_returns.empty:
-            try:
-                all_var_results['Parametric'] = st.session_state.var_engines.calculate_parametric_var(
-                    portfolio_returns, confidence_level, time_horizon, False
-                )
-            except Exception as e:
-                all_var_results['Parametric'] = f"Error: {e}"
-            try:
-                all_var_results['Historical'] = st.session_state.var_engines.calculate_historical_var(
-                    portfolio_returns, confidence_level, time_horizon
-                )
-            except Exception as e:
-                all_var_results['Historical'] = f"Error: {e}"
-            try:
-                all_var_results['Monte Carlo'] = st.session_state.var_engines.calculate_monte_carlo_var(
-                    portfolio_returns, confidence_level, time_horizon, 10000
-                )
-            except Exception as e:
-                all_var_results['Monte Carlo'] = f"Error: {e}"
-            try:
-                all_var_results['GARCH'] = st.session_state.var_engines.calculate_garch_var(
-                    portfolio_returns, confidence_level, time_horizon, garch_p, garch_q
-                )
-            except Exception as e:
-                all_var_results['GARCH'] = f"Error: {e}"
-            try:
-                all_var_results['EVT'] = st.session_state.var_engines.calculate_evt_var(
-                    portfolio_returns, confidence_level
-                )
-            except Exception as e:
-                all_var_results['EVT'] = f"Error: {e}"
         
-            # Display comparison
+        try:
+            all_var_results['Parametric'] = st.session_state.var_engines.calculate_parametric_var(
+                portfolio_returns, confidence_level, time_horizon, False
+            )
+            all_var_results['Historical'] = st.session_state.var_engines.calculate_historical_var(
+                portfolio_returns, confidence_level, time_horizon
+            )
+            all_var_results['Monte Carlo'] = st.session_state.var_engines.calculate_monte_carlo_var(
+                portfolio_returns, confidence_level, time_horizon, 10000
+            )
+            all_var_results['GARCH'] = st.session_state.var_engines.calculate_garch_var(
+                portfolio_returns, confidence_level, time_horizon, garch_p, garch_q
+            )
+            all_var_results['EVT'] = st.session_state.var_engines.calculate_evt_var(
+                portfolio_returns, confidence_level
+            )
+            
             comparison_df = pd.DataFrame(list(all_var_results.items()), columns=['Method', 'VaR'])
             st.dataframe(comparison_df, use_container_width=True)
-        else:
-            st.info("No portfolio returns available for model comparison.")
+        except Exception as e:
+            st.warning(f"Error in model comparison: {e}")
     else:
         st.info("Please load market data first to calculate VaR.")
 
@@ -527,8 +569,6 @@ with tab3:
     st.header("🧪 Backtesting & Validation")
     
     if portfolio_returns is not None and not portfolio_returns.empty:
-        
-        # Backtesting parameters
         col1, col2 = st.columns(2)
         
         with col1:
@@ -539,57 +579,45 @@ with tab3:
         with col2:
             st.subheader("📊 Backtesting Results")
             
-            # Check if we have enough data for backtesting
             if len(portfolio_returns) < backtest_window + 50:
                 st.warning(f"Insufficient data for backtesting. Need at least {backtest_window + 50} data points, but only have {len(portfolio_returns)}.")
             else:
-                # Perform backtesting
                 try:
-                    # Ensure the backtesting function correctly handles the method names
                     if var_method == "Parametric":
                         var_func = lambda ret, conf, horizon: st.session_state.var_engines.calculate_parametric_var(ret, conf, horizon, False)
                     elif var_method == "Historical":
                         var_func = st.session_state.var_engines.calculate_historical_var
                     elif var_method == "Monte Carlo":
                         var_func = lambda ret, conf, horizon: st.session_state.var_engines.calculate_monte_carlo_var(ret, conf, horizon, 10000)
-                    else:
-                        st.error("Invalid VaR method selected for backtesting.")
-                        var_func = None
 
-                    if var_func:
-                        backtest_results = st.session_state.backtesting.perform_backtesting(
-                            portfolio_returns, confidence_level, backtest_window, var_func
+                    backtest_results = st.session_state.backtesting.perform_backtesting(
+                        portfolio_returns, confidence_level, backtest_window, var_func
+                    )
+                    
+                    if backtest_results and 'kupiec_pvalue' in backtest_results:
+                        st.metric("Kupiec Test p-value", f"{backtest_results['kupiec_pvalue']:.4f}")
+                        st.metric("Actual Violations", f"{backtest_results['violations']}")
+                        st.metric("Expected Violations", f"{backtest_results['expected_violations']:.1f}")
+                        
+                        st.subheader("🚦 Basel Traffic Light System")
+                        traffic_light = st.session_state.backtesting.basel_traffic_light(
+                            backtest_results['violations'], backtest_results['expected_violations']
                         )
                         
-                        if backtest_results and 'kupiec_pvalue' in backtest_results:
-                            # Display Kupiec test results
-                            st.metric("Kupiec Test p-value", f"{backtest_results['kupiec_pvalue']:.4f}")
-                            st.metric("Actual Violations", f"{backtest_results['violations']}")
-                            st.metric("Expected Violations", f"{backtest_results['expected_violations']:.1f}")
-                            
-                            # Basel Traffic Light
-                            st.subheader("🚦 Basel Traffic Light System")
-                            traffic_light = st.session_state.backtesting.basel_traffic_light(
-                                backtest_results['violations'], backtest_results['expected_violations']
-                            )
-                            
-                            if traffic_light == 'Green':
-                                st.success("✅ Green Zone - Model performs well")
-                            elif traffic_light == 'Yellow':
-                                st.warning("⚠️ Yellow Zone - Model needs attention")
-                            else:
-                                st.error("🔴 Red Zone - Model requires immediate review")
-                            
-                            # Violation plot
-                            st.subheader("📈 VaR Violations Over Time")
-                            fig = st.session_state.visualization.plot_var_violations(
-                                portfolio_returns, backtest_results['var_estimates'], backtest_results['violations_dates']
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
+                        if traffic_light == 'Green':
+                            st.success("✅ Green Zone - Model performs well")
+                        elif traffic_light == 'Yellow':
+                            st.warning("⚠️ Yellow Zone - Model needs attention")
                         else:
-                            st.error("Backtesting failed to return valid results.")
+                            st.error("🔴 Red Zone - Model requires immediate review")
+                        
+                        st.subheader("📈 VaR Violations Over Time")
+                        fig = st.session_state.visualization.plot_var_violations(
+                            portfolio_returns, backtest_results['var_estimates'], backtest_results['violations_dates']
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
                 except Exception as e:
-                    st.error(f"Error during backtesting: {e}. Please ensure sufficient data for the selected window.")
+                    st.error(f"Error during backtesting: {e}")
     else:
         st.info("Please load market data first to perform backtesting.")
 
@@ -597,7 +625,6 @@ with tab3:
 with tab4:
     st.header("⚡ Scenario & Stress Testing")
     
-    # Scenario selection
     col1, col2 = st.columns(2)
     
     with col1:
@@ -607,7 +634,6 @@ with tab4:
             ["2008 Financial Crisis", "COVID-19 Pandemic", "Dot-com Crash", "Custom Scenario"]
         )
         
-        # Initialize custom scenario variables
         vol_shock = 0
         corr_shock = 0.0
         spot_shock = 0
@@ -621,7 +647,6 @@ with tab4:
         st.subheader("📈 Stress Test Results")
         
         if portfolio_returns is not None and not portfolio_returns.empty:
-            # Perform stress testing
             try:
                 if scenario_type == "Custom Scenario":
                     stress_results = st.session_state.stress_testing.run_custom_stress_test(
@@ -663,10 +688,8 @@ with tab4:
                     var_val = stress_result.get('stressed_var', 0) if stress_result else 0
                 scenario_vars.append(var_val)
             except Exception as e:
-                st.warning(f"Could not calculate VaR for {scenario} scenario: {e}")
                 scenario_vars.append(0)
         
-        # Plot scenario comparison
         if any(v > 0 for v in scenario_vars):
             fig = px.bar(
                 x=scenarios,
@@ -676,16 +699,12 @@ with tab4:
             )
             fig.update_traces(marker_color='#ff6b6b')
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No valid scenario VaR data to plot.")
 
 # Rolling Analysis Tab
 with tab5:
     st.header("📈 Rolling Analysis")
     
     if portfolio_returns is not None and not portfolio_returns.empty:
-        
-        # Rolling analysis parameters
         col1, col2 = st.columns(2)
         
         with col1:
@@ -697,7 +716,6 @@ with tab5:
                 ["Rolling VaR", "Rolling Volatility", "Rolling Sharpe", "Drawdown Analysis"]
             )
         
-        # Perform rolling analysis
         if analysis_type == "Rolling VaR":
             st.subheader("📊 Rolling VaR Analysis")
             rolling_var = st.session_state.rolling_analysis.calculate_rolling_var(
@@ -722,8 +740,6 @@ with tab5:
                     height=500
                 )
                 st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.warning("Insufficient data for rolling VaR calculation.")
         
         elif analysis_type == "Rolling Volatility":
             st.subheader("📊 Rolling Volatility Analysis")
@@ -770,9 +786,9 @@ with tab5:
             )
             st.plotly_chart(fig, use_container_width=True)
         
-        # Correlation heatmap
-        st.subheader("🔥 Correlation Heatmap")
-        if portfolio_type == "Multi-Asset" and returns is not None and not returns.empty and len(returns.columns) > 1:
+        # Correlation heatmap for multi-asset portfolios
+        if portfolio_type in ["Multi-Asset", "Crypto Portfolio"] and returns is not None and len(returns.columns) > 1:
+            st.subheader("🔥 Correlation Heatmap")
             try:
                 corr_matrix = returns.corr()
                 fig = px.imshow(
@@ -785,11 +801,7 @@ with tab5:
                 fig.update_layout(title="Asset Correlation Matrix")
                 st.plotly_chart(fig, use_container_width=True)
             except Exception as e:
-                st.warning(f"Could not generate correlation heatmap: {e}. Ensure enough data for multi-asset correlation.")
-        elif portfolio_type == "Multi-Asset":
-             st.info("No returns data available for multi-asset correlation heatmap.")
-        else:
-            st.info("Select 'Multi-Asset' portfolio type to view Correlation Heatmap.")
+                st.warning(f"Could not generate correlation heatmap: {e}")
     else:
         st.info("Please load market data first to perform rolling analysis.")
 
@@ -798,28 +810,26 @@ with tab6:
     st.header("📊 Options Portfolio VaR")
     
     if portfolio_type == "Options Portfolio":
-        # Options parameters
+        # Default options parameters
         col1, col2, col3 = st.columns(3)
         
         with col1:
             spot_price = st.number_input("Spot Price ($)", 50.0, 5000.0, 100.0)
-            strike_price = st.number_input("Strike Price ($)", 50.0, 5000.0, 100.0)
+            strike_price = st.number_input("Strike Price ($)", 50.0, 5000.0, 105.0)
             
         with col2:
             time_to_expiry = st.number_input("Time to Expiry (days)", 1, 365, 30) / 365
             risk_free_rate = st.slider("Risk-free Rate (%)", 0.0, 10.0, 2.0) / 100
             
         with col3:
-            volatility_input = st.slider("Volatility (%)", 10, 100, 20) / 100
+            volatility_input = st.slider("Volatility (%)", 10, 100, 25) / 100
             option_type = st.selectbox("Option Type", ["Call", "Put"])
         
-        # Options VaR calculation method
         options_var_method = st.selectbox(
             "Options VaR Method",
             ["Delta-Normal", "Delta-Gamma", "Full Revaluation Monte Carlo"]
         )
         
-        # Calculate options VaR
         col1, col2 = st.columns(2)
         
         with col1:
@@ -837,15 +847,12 @@ with tab6:
                     st.metric("Gamma", f"{options_var_result['gamma']:.4f}")
                     st.metric("Theta", f"{options_var_result['theta']:.4f}")
                     st.metric("Vega", f"{options_var_result['vega']:.4f}")
-                else:
-                    st.error("Failed to calculate options VaR.")
             except Exception as e:
-                st.error(f"Error calculating options VaR: {e}. Please check inputs.")
+                st.error(f"Error calculating options VaR: {e}")
         
         with col2:
             st.subheader("📈 Greeks Sensitivity")
             
-            # Plot Greeks
             spot_range = np.linspace(spot_price * 0.8, spot_price * 1.2, 50)
             deltas = []
             gammas = []
@@ -881,7 +888,7 @@ with tab6:
                 )
                 st.plotly_chart(fig, use_container_width=True)
             except Exception as e:
-                st.error(f"Error plotting Greeks: {e}. Ensure inputs are valid.")
+                st.error(f"Error plotting Greeks: {e}")
     else:
         st.info("Please select 'Options Portfolio' in the sidebar to access options VaR calculations.")
 
@@ -890,8 +897,6 @@ with tab7:
     st.header("📄 Reports & Exports")
     
     if portfolio_returns is not None and not portfolio_returns.empty:
-        
-        # Report generation options
         col1, col2 = st.columns(2)
         
         with col1:
@@ -906,17 +911,12 @@ with tab7:
                 "Export Format",
                 ["CSV", "JSON"]
             )
-            
-            include_charts = st.checkbox("Include Charts", value=True)
-            include_data = st.checkbox("Include Raw Data", value=False)
         
         with col2:
             st.subheader("📈 Quick Metrics Export")
             
-            # Generate summary metrics
             current_parametric_var = st.session_state.var_engines.calculate_parametric_var(portfolio_returns, 0.95, 1, cornish_fisher)
             current_es = st.session_state.var_engines.calculate_expected_shortfall(portfolio_returns, 0.95)
-            max_drawdown_val = st.session_state.rolling_analysis.calculate_drawdown(portfolio_returns).min() * 100 if not portfolio_returns.empty else 0
 
             summary_metrics = {
                 'VaR (95%)': current_parametric_var,
@@ -930,10 +930,8 @@ with tab7:
             metrics_df = pd.DataFrame(list(summary_metrics.items()), columns=['Metric', 'Value'])
             st.dataframe(metrics_df, use_container_width=True)
         
-        # Generate and download report
         if st.button("Generate Report", type="primary"):
             with st.spinner("Generating report..."):
-                
                 if export_format == "CSV":
                     csv_data = metrics_df.to_csv(index=False)
                     st.download_button(
@@ -942,7 +940,6 @@ with tab7:
                         file_name=f"risk_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                         mime="text/csv"
                     )
-                
                 elif export_format == "JSON":
                     import json
                     json_serializable_metrics = {k: float(v) if isinstance(v, (np.float32, np.float64)) else v for k, v in summary_metrics.items()}
@@ -955,36 +952,157 @@ with tab7:
                     )
                 
                 st.success("✅ Report generated successfully!")
-        
-        # Data Export Section
-        st.subheader("📊 Data Export")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if st.button("Export Portfolio Returns"):
-                csv_returns = portfolio_returns.to_csv()
-                st.download_button(
-                    label="Download Returns Data",
-                    data=csv_returns,
-                    file_name=f"portfolio_returns_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
-                )
-        
-        with col2:
-            if st.button("Export Price Data"):
-                if market_data is not None and not market_data.empty:
-                    csv_prices = market_data.to_csv()
-                    st.download_button(
-                        label="Download Price Data",
-                        data=csv_prices,
-                        file_name=f"price_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                        mime="text/csv"
-                    )
-                else:
-                    st.info("No price data available to export.")
     else:
         st.info("Please load data first to generate reports.")
+
+# Help & Guide Tab
+with tab8:
+    st.header("❓ Help & User Guide")
+    
+    # Platform Overview
+    st.markdown('<div class="help-section">', unsafe_allow_html=True)
+    st.subheader("🏠 Platform Overview")
+    st.markdown("""
+    The VaR & Risk Analytics Platform is a comprehensive tool for financial risk assessment and portfolio analysis. 
+    It provides multiple VaR calculation methods, backtesting capabilities, stress testing, and detailed risk analytics.
+    """)
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Getting Started
+    st.markdown('<div class="help-section">', unsafe_allow_html=True)
+    st.subheader("🚀 Getting Started")
+    st.markdown("""
+    **Step 1: Choose Data Source**
+    - **Live Market Data**: Enter stock symbols (e.g., AAPL, GOOGL) or crypto symbols (e.g., BTC-USD, ETH-USD)
+    - **CSV/XLSX Upload**: Upload your own price data
+    - **Manual Entry**: Use synthetic data or enter custom data points
+    
+    **Step 2: Select Portfolio Type**
+    - **Single Asset**: Analyze one security
+    - **Multi-Asset**: Analyze a portfolio of multiple securities
+    - **Crypto Portfolio**: Focus on cryptocurrency analysis
+    - **Options Portfolio**: Analyze options positions
+    
+    **Step 3: Configure Risk Parameters**
+    - Set confidence level (90-99%)
+    - Choose time horizon (1-30 days)
+    - Select VaR calculation method
+    """)
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Data Input Formats
+    st.markdown('<div class="help-section">', unsafe_allow_html=True)
+    st.subheader("📊 Data Input Formats")
+    
+    st.markdown("**CSV/XLSX File Format:**")
+    st.code("""
+Date,AAPL,GOOGL,MSFT
+2023-01-01,150.25,95.30,245.50
+2023-01-02,151.10,96.15,246.75
+2023-01-03,149.80,94.85,244.20
+    """)
+    
+    st.markdown("**Manual Entry Format:**")
+    st.code("""
+2023-01-01,100.00
+2023-01-02,101.50
+2023-01-03,99.75
+    """)
+    
+    st.markdown("**Requirements:**")
+    st.markdown("""
+    - First column must be dates in YYYY-MM-DD format
+    - Subsequent columns should contain price data
+    - No missing values in price columns
+    - At least 100 data points recommended for reliable analysis
+    """)
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # VaR Methods Explained
+    st.markdown('<div class="help-section">', unsafe_allow_html=True)
+    st.subheader("📈 VaR Calculation Methods")
+    
+    st.markdown("**Parametric (Delta-Normal)**")
+    st.markdown("- Assumes normal distribution of returns")
+    st.markdown("- Fast calculation, suitable for linear portfolios")
+    st.markdown("- May underestimate tail risks")
+    
+    st.markdown("**Historical Simulation**")
+    st.markdown("- Uses actual historical return distribution")
+    st.markdown("- No distributional assumptions")
+    st.markdown("- Requires sufficient historical data")
+    
+    st.markdown("**Monte Carlo**")
+    st.markdown("- Simulates future price paths")
+    st.markdown("- Flexible for complex portfolios")
+    st.markdown("- Computationally intensive")
+    
+    st.markdown("**GARCH-Based**")
+    st.markdown("- Models time-varying volatility")
+    st.markdown("- Good for volatile markets")
+    st.markdown("- Requires parameter estimation")
+    
+    st.markdown("**Extreme Value Theory (EVT)**")
+    st.markdown("- Focuses on tail events")
+    st.markdown("- Better for extreme risk assessment")
+    st.markdown("- Requires sufficient extreme observations")
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Parameter Guidelines
+    st.markdown('<div class="help-section">', unsafe_allow_html=True)
+    st.subheader("⚙️ Parameter Guidelines")
+    
+    st.markdown("**Confidence Level:**")
+    st.markdown("- 95%: Standard for daily risk management")
+    st.markdown("- 99%: Regulatory requirements (Basel)")
+    st.markdown("- 99.9%: Extreme risk assessment")
+    
+    st.markdown("**Time Horizon:**")
+    st.markdown("- 1 day: Daily trading risk")
+    st.markdown("- 10 days: Regulatory standard")
+    st.markdown("- 30 days: Monthly risk assessment")
+    
+    st.markdown("**Historical Window:**")
+    st.markdown("- 252 days: One year of trading data")
+    st.markdown("- 500+ days: More stable estimates")
+    st.markdown("- Shorter windows: More responsive to recent changes")
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Interpretation Guide
+    st.markdown('<div class="help-section">', unsafe_allow_html=True)
+    st.subheader("📋 Results Interpretation")
+    
+    st.markdown("**VaR Interpretation:**")
+    st.markdown("- VaR of $10,000 at 95% confidence means:")
+    st.markdown("- 95% chance losses will not exceed $10,000")
+    st.markdown("- 5% chance losses will exceed $10,000")
+    
+    st.markdown("**Expected Shortfall (ES):**")
+    st.markdown("- Average loss when VaR is exceeded")
+    st.markdown("- Always higher than VaR")
+    st.markdown("- Better measure of tail risk")
+    
+    st.markdown("**Backtesting Results:**")
+    st.markdown("- Green Zone: Model is adequate")
+    st.markdown("- Yellow Zone: Model needs attention")
+    st.markdown("- Red Zone: Model requires immediate review")
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Troubleshooting
+    st.markdown('<div class="help-section">', unsafe_allow_html=True)
+    st.subheader("🔧 Troubleshooting")
+    
+    st.markdown("**Common Issues:**")
+    st.markdown("- **Insufficient Data**: Ensure at least 100+ data points")
+    st.markdown("- **Missing Prices**: Check for gaps in price data")
+    st.markdown("- **Symbol Errors**: Verify ticker symbols are correct")
+    st.markdown("- **Date Format**: Use YYYY-MM-DD format")
+    
+    st.markdown("**Performance Tips:**")
+    st.markdown("- Use shorter time series for faster calculations")
+    st.markdown("- Reduce Monte Carlo simulations if needed")
+    st.markdown("- Cache is enabled for market data (1 hour)")
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # Footer
 st.markdown("---")
