@@ -108,6 +108,39 @@ def generate_synthetic_data(num_days=500, initial_price=100, annual_return=0.08,
     
     return df
 
+# Function to calculate VaR based on selected model
+def calculate_var_by_model(returns, var_model, confidence_level, time_horizon, cornish_fisher, num_simulations, garch_p, garch_q):
+    """Calculate VaR using the selected model"""
+    try:
+        if var_model == "Parametric (Delta-Normal)":
+            return st.session_state.var_engines.calculate_parametric_var(
+                returns, confidence_level, time_horizon, cornish_fisher
+            )
+        elif var_model == "Historical Simulation":
+            return st.session_state.var_engines.calculate_historical_var(
+                returns, confidence_level, time_horizon
+            )
+        elif var_model == "Monte Carlo":
+            return st.session_state.var_engines.calculate_monte_carlo_var(
+                returns, confidence_level, time_horizon, num_simulations
+            )
+        elif var_model == "GARCH-Based":
+            return st.session_state.var_engines.calculate_garch_var(
+                returns, confidence_level, time_horizon, garch_p, garch_q
+            )
+        elif var_model == "Extreme Value Theory":
+            return st.session_state.var_engines.calculate_evt_var(
+                returns, confidence_level
+            )
+        else:
+            # Default to parametric
+            return st.session_state.var_engines.calculate_parametric_var(
+                returns, confidence_level, time_horizon, False
+            )
+    except Exception as e:
+        st.error(f"Error calculating VaR with {var_model}: {str(e)}")
+        return 0
+
 # Sidebar Controls
 with st.sidebar:
     st.title("🔧 Risk Analytics Controls")
@@ -397,14 +430,16 @@ with tab1:
     st.header("📊 Risk Dashboard")
     
     if portfolio_returns is not None and not portfolio_returns.empty:
-        # Key Metrics
+        # Key Metrics - Now using the selected VaR model
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            current_var = st.session_state.var_engines.calculate_parametric_var(
-                portfolio_returns, confidence_level, time_horizon, cornish_fisher
+            # Use the selected VaR model for dashboard
+            current_var = calculate_var_by_model(
+                portfolio_returns, var_model, confidence_level, time_horizon, 
+                cornish_fisher, num_simulations, garch_p, garch_q
             )
-            st.metric("VaR (95%)", f"${current_var:,.2f}", delta=None)
+            st.metric(f"VaR ({int(confidence_level*100)}%) - {var_model.split(' ')[0]}", f"${current_var:,.2f}", delta=None)
         
         with col2:
             expected_shortfall = st.session_state.var_engines.calculate_expected_shortfall(
@@ -444,18 +479,17 @@ with tab1:
         )
         st.plotly_chart(fig, use_container_width=True)
         
-        # Returns Distribution and Rolling Volatility
+        # Returns Distribution and VaR Visualization
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("📊 Returns Distribution")
-            fig = px.histogram(
-                x=portfolio_returns.values,
-                nbins=50,
-                title="Daily Returns Distribution",
-                template="plotly_dark"
+            st.subheader("📊 Returns Distribution with VaR")
+            # Show VaR visualization using the selected model
+            fig = st.session_state.visualization.plot_var_distribution(
+                portfolio_returns, confidence_level, current_var
             )
-            fig.update_traces(marker_color='#ff6b6b')
+            # Update title to show the selected model
+            fig.update_layout(title=f"Returns Distribution with {var_model} VaR")
             st.plotly_chart(fig, use_container_width=True)
         
         with col2:
@@ -478,6 +512,105 @@ with tab1:
                 template="plotly_dark"
             )
             st.plotly_chart(fig, use_container_width=True)
+        
+        # Additional Dashboard Metrics
+        st.subheader("📊 Model-Specific Insights")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            # Show model-specific information
+            if var_model == "Parametric (Delta-Normal)":
+                skewness = portfolio_returns.skew()
+                kurtosis = portfolio_returns.kurtosis()
+                st.metric("Skewness", f"{skewness:.3f}")
+                st.metric("Excess Kurtosis", f"{kurtosis:.3f}")
+                if abs(skewness) > 0.5 or abs(kurtosis) > 1:
+                    st.warning("⚠️ Non-normal distribution detected. Consider other VaR methods.")
+            
+            elif var_model == "Historical Simulation":
+                percentile_5 = np.percentile(portfolio_returns, 5)
+                percentile_95 = np.percentile(portfolio_returns, 95)
+                st.metric("5th Percentile", f"{percentile_5:.4f}")
+                st.metric("95th Percentile", f"{percentile_95:.4f}")
+            
+            elif var_model == "Monte Carlo":
+                st.metric("Simulations Used", f"{num_simulations:,}")
+                st.info("💡 Increase simulations for more accuracy")
+            
+            elif var_model == "GARCH-Based":
+                st.metric("GARCH Model", f"GARCH({garch_p},{garch_q})")
+                st.info("💡 GARCH captures volatility clustering")
+            
+            elif var_model == "Extreme Value Theory":
+                tail_observations = len(portfolio_returns[portfolio_returns < portfolio_returns.quantile(0.05)])
+                st.metric("Tail Observations", f"{tail_observations}")
+                st.info("💡 EVT focuses on extreme events")
+        
+        with col2:
+            # Risk decomposition for multi-asset portfolios
+            if portfolio_type in ["Multi-Asset", "Crypto Portfolio"] and returns is not None and len(returns.columns) > 1:
+                st.subheader("🎯 Risk Contribution")
+                try:
+                    # Calculate component VaR if we have weights
+                    if weights:
+                        weights_array = [weights.get(col, 0) for col in returns.columns]
+                        component_vars = st.session_state.var_engines.calculate_component_var(
+                            returns, weights_array, confidence_level
+                        )
+                        
+                        if component_vars:
+                            # Create a simple bar chart of risk contributions
+                            assets = list(component_vars.keys())
+                            contributions = list(component_vars.values())
+                            
+                            fig = go.Figure(data=[
+                                go.Bar(x=assets, y=contributions, marker_color='#ff6b6b')
+                            ])
+                            fig.update_layout(
+                                title="Risk Contribution by Asset",
+                                xaxis_title="Assets",
+                                yaxis_title="Component VaR ($)",
+                                template="plotly_dark",
+                                height=300
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                except Exception as e:
+                    st.info("Risk decomposition not available for current configuration")
+        
+        with col3:
+            # Model comparison mini-chart
+            st.subheader("🔍 Quick Model Comparison")
+            try:
+                comparison_models = ["Parametric (Delta-Normal)", "Historical Simulation", "Monte Carlo"]
+                comparison_vars = []
+                
+                for model in comparison_models:
+                    try:
+                        var_val = calculate_var_by_model(
+                            portfolio_returns, model, confidence_level, time_horizon,
+                            False, 5000, 1, 1  # Use simplified parameters for comparison
+                        )
+                        comparison_vars.append(var_val)
+                    except:
+                        comparison_vars.append(0)
+                
+                # Highlight the selected model
+                colors = ['#ff6b6b' if model == var_model else '#4ecdc4' for model in comparison_models]
+                
+                fig = go.Figure(data=[
+                    go.Bar(x=[m.split(' ')[0] for m in comparison_models], y=comparison_vars, marker_color=colors)
+                ])
+                fig.update_layout(
+                    title="VaR Model Comparison",
+                    xaxis_title="Models",
+                    yaxis_title="VaR ($)",
+                    template="plotly_dark",
+                    height=300
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.info("Model comparison not available")
+                
     else:
         st.info("Please load data to view the dashboard.")
 
@@ -494,31 +627,12 @@ with tab2:
             var_results = {}
             calculated_var_value = None
             
-            if var_model == "Parametric (Delta-Normal)":
-                calculated_var_value = st.session_state.var_engines.calculate_parametric_var(
-                    portfolio_returns, confidence_level, time_horizon, cornish_fisher
-                )
-                var_results['Parametric'] = calculated_var_value
-            elif var_model == "Historical Simulation":
-                calculated_var_value = st.session_state.var_engines.calculate_historical_var(
-                    portfolio_returns, confidence_level, time_horizon
-                )
-                var_results['Historical'] = calculated_var_value
-            elif var_model == "Monte Carlo":
-                calculated_var_value = st.session_state.var_engines.calculate_monte_carlo_var(
-                    portfolio_returns, confidence_level, time_horizon, num_simulations
-                )
-                var_results['Monte Carlo'] = calculated_var_value
-            elif var_model == "GARCH-Based":
-                calculated_var_value = st.session_state.var_engines.calculate_garch_var(
-                    portfolio_returns, confidence_level, time_horizon, garch_p, garch_q
-                )
-                var_results['GARCH'] = calculated_var_value
-            elif var_model == "Extreme Value Theory":
-                calculated_var_value = st.session_state.var_engines.calculate_evt_var(
-                    portfolio_returns, confidence_level
-                )
-                var_results['EVT'] = calculated_var_value
+            # Calculate VaR using the selected model
+            calculated_var_value = calculate_var_by_model(
+                portfolio_returns, var_model, confidence_level, time_horizon,
+                cornish_fisher, num_simulations, garch_p, garch_q
+            )
+            var_results[var_model.split(' ')[0]] = calculated_var_value
 
             for method, var_value in var_results.items():
                 st.metric(f"{method} VaR", f"${var_value:,.2f}")
@@ -534,6 +648,7 @@ with tab2:
                 fig = st.session_state.visualization.plot_var_distribution(
                     portfolio_returns, confidence_level, calculated_var_value
                 )
+                fig.update_layout(title=f"{var_model} VaR Distribution")
                 st.plotly_chart(fig, use_container_width=True)
         
         # Model Comparison
@@ -558,7 +673,14 @@ with tab2:
             )
             
             comparison_df = pd.DataFrame(list(all_var_results.items()), columns=['Method', 'VaR'])
-            st.dataframe(comparison_df, use_container_width=True)
+            # Highlight the selected method
+            def highlight_selected(row):
+                if var_model.startswith(row['Method']) or row['Method'] in var_model:
+                    return ['background-color: #2d2d2d; color: #00ff88'] * len(row)
+                return [''] * len(row)
+            
+            styled_df = comparison_df.style.apply(highlight_selected, axis=1)
+            st.dataframe(styled_df, use_container_width=True)
         except Exception as e:
             st.warning(f"Error in model comparison: {e}")
     else:
@@ -573,8 +695,9 @@ with tab3:
         
         with col1:
             backtest_window = st.number_input("Backtesting Window (days)", 100, 1000, 252)
-            var_method = st.selectbox("VaR Method for Backtesting", 
-                                    ["Parametric", "Historical", "Monte Carlo"])
+            # Use the selected VaR model for backtesting
+            var_method_display = var_model.split(' ')[0]  # Get the first word for display
+            st.info(f"Using {var_model} for backtesting")
         
         with col2:
             st.subheader("📊 Backtesting Results")
@@ -583,12 +706,12 @@ with tab3:
                 st.warning(f"Insufficient data for backtesting. Need at least {backtest_window + 50} data points, but only have {len(portfolio_returns)}.")
             else:
                 try:
-                    if var_method == "Parametric":
-                        var_func = lambda ret, conf, horizon: st.session_state.var_engines.calculate_parametric_var(ret, conf, horizon, False)
-                    elif var_method == "Historical":
-                        var_func = st.session_state.var_engines.calculate_historical_var
-                    elif var_method == "Monte Carlo":
-                        var_func = lambda ret, conf, horizon: st.session_state.var_engines.calculate_monte_carlo_var(ret, conf, horizon, 10000)
+                    # Create a lambda function that uses the selected VaR model
+                    def var_func(ret, conf, horizon):
+                        return calculate_var_by_model(
+                            ret, var_model, conf, horizon,
+                            cornish_fisher, num_simulations, garch_p, garch_q
+                        )
 
                     backtest_results = st.session_state.backtesting.perform_backtesting(
                         portfolio_returns, confidence_level, backtest_window, var_func
@@ -615,6 +738,7 @@ with tab3:
                         fig = st.session_state.visualization.plot_var_violations(
                             portfolio_returns, backtest_results['var_estimates'], backtest_results['violations_dates']
                         )
+                        fig.update_layout(title=f"{var_model} VaR Violations Over Time")
                         st.plotly_chart(fig, use_container_width=True)
                 except Exception as e:
                     st.error(f"Error during backtesting: {e}")
@@ -661,6 +785,7 @@ with tab4:
                     st.metric("Stressed VaR", f"${stress_results['stressed_var']:,.2f}")
                     st.metric("VaR Increase", f"{stress_results['var_increase']:.1f}%")
                     st.metric("Worst Case Loss", f"${stress_results['worst_case']:,.2f}")
+                    st.info(f"Using {var_model} for stress testing")
                 else:
                     st.error("Stress testing failed to return valid results.")
             except Exception as e:
@@ -678,8 +803,9 @@ with tab4:
         for scenario in scenarios:
             try:
                 if scenario == "Normal":
-                    var_val = st.session_state.var_engines.calculate_parametric_var(
-                        portfolio_returns, confidence_level, time_horizon, cornish_fisher
+                    var_val = calculate_var_by_model(
+                        portfolio_returns, var_model, confidence_level, time_horizon,
+                        cornish_fisher, num_simulations, garch_p, garch_q
                     )
                 else:
                     stress_result = st.session_state.stress_testing.run_stress_test(
@@ -694,7 +820,7 @@ with tab4:
             fig = px.bar(
                 x=scenarios,
                 y=scenario_vars,
-                title="VaR Across Different Scenarios",
+                title=f"VaR Across Different Scenarios ({var_model})",
                 template="plotly_dark"
             )
             fig.update_traces(marker_color='#ff6b6b')
@@ -717,7 +843,7 @@ with tab5:
             )
         
         if analysis_type == "Rolling VaR":
-            st.subheader("📊 Rolling VaR Analysis")
+            st.subheader(f"📊 Rolling VaR Analysis ({var_model})")
             rolling_var = st.session_state.rolling_analysis.calculate_rolling_var(
                 portfolio_returns, confidence_level, rolling_window
             )
@@ -733,7 +859,7 @@ with tab5:
                 ))
                 
                 fig.update_layout(
-                    title=f"Rolling {rolling_window}-Day VaR",
+                    title=f"Rolling {rolling_window}-Day VaR ({var_model})",
                     xaxis_title="Date",
                     yaxis_title="VaR ($)",
                     template="plotly_dark",
@@ -915,11 +1041,15 @@ with tab7:
         with col2:
             st.subheader("📈 Quick Metrics Export")
             
-            current_parametric_var = st.session_state.var_engines.calculate_parametric_var(portfolio_returns, 0.95, 1, cornish_fisher)
-            current_es = st.session_state.var_engines.calculate_expected_shortfall(portfolio_returns, 0.95)
+            # Use the selected VaR model for reporting
+            current_var = calculate_var_by_model(
+                portfolio_returns, var_model, confidence_level, time_horizon,
+                cornish_fisher, num_simulations, garch_p, garch_q
+            )
+            current_es = st.session_state.var_engines.calculate_expected_shortfall(portfolio_returns, confidence_level)
 
             summary_metrics = {
-                'VaR (95%)': current_parametric_var,
+                f'VaR ({int(confidence_level*100)}%) - {var_model}': current_var,
                 'Expected Shortfall': current_es,
                 'Volatility (%)': portfolio_returns.std() * np.sqrt(252) * 100,
                 'Sharpe Ratio': (portfolio_returns.mean() * 252 - 0.02) / (portfolio_returns.std() * np.sqrt(252)),
@@ -937,7 +1067,7 @@ with tab7:
                     st.download_button(
                         label="Download CSV Report",
                         data=csv_data,
-                        file_name=f"risk_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        file_name=f"risk_report_{var_model.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                         mime="text/csv"
                     )
                 elif export_format == "JSON":
@@ -947,7 +1077,7 @@ with tab7:
                     st.download_button(
                         label="Download JSON Report",
                         data=json_data,
-                        file_name=f"risk_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                        file_name=f"risk_report_{var_model.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                         mime="application/json"
                     )
                 
