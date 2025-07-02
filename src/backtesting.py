@@ -25,18 +25,24 @@ class Backtesting:
                 # Get historical window
                 hist_returns = returns.iloc[i-window_size:i]
                 
-                # Calculate VaR estimate
-                if var_method == "Parametric":
+                # Calculate VaR estimate based on method
+                try:
+                    if hasattr(var_method, '__call__'):
+                        # If var_method is a function, call it directly
+                        var_est = var_method(hist_returns, confidence_level, 1)
+                        # Convert to return space (assuming var_method returns dollar amount)
+                        var_est = var_est / 100000  # Convert back to return percentage
+                    else:
+                        # Fallback to parametric method
+                        var_est = self._calculate_parametric_var_simple(hist_returns, confidence_level)
+                except Exception as e:
+                    st.warning(f"Error calculating VaR at step {i}: {e}")
                     var_est = self._calculate_parametric_var_simple(hist_returns, confidence_level)
-                elif var_method == "Historical":
-                    var_est = self._calculate_historical_var_simple(hist_returns, confidence_level)
-                else:  # Monte Carlo
-                    var_est = self._calculate_monte_carlo_var_simple(hist_returns, confidence_level)
                 
                 # Get actual return
                 actual_return = returns.iloc[i]
                 
-                # Check for violation
+                # Check for violation (actual loss exceeds VaR)
                 violation = actual_return < -var_est
                 
                 var_estimates.append(var_est)
@@ -48,7 +54,7 @@ class Backtesting:
             total_observations = len(violations)
             total_violations = sum(violations)
             expected_violations = total_observations * (1 - confidence_level)
-            violation_rate = total_violations / total_observations
+            violation_rate = total_violations / total_observations if total_observations > 0 else 0
             
             # Kupiec Test (Unconditional Coverage)
             kupiec_lr, kupiec_pvalue = self._kupiec_test(total_violations, total_observations, confidence_level)
@@ -80,30 +86,45 @@ class Backtesting:
     
     def _calculate_parametric_var_simple(self, returns, confidence_level):
         """Simple parametric VaR calculation for backtesting"""
-        mu = returns.mean()
-        sigma = returns.std()
-        z_score = stats.norm.ppf(1 - confidence_level)
-        return -(mu + sigma * z_score)
+        try:
+            mu = returns.mean()
+            sigma = returns.std()
+            z_score = stats.norm.ppf(1 - confidence_level)
+            return -(mu + sigma * z_score)
+        except Exception as e:
+            st.warning(f"Error in parametric VaR calculation: {e}")
+            return 0
     
     def _calculate_historical_var_simple(self, returns, confidence_level):
         """Simple historical VaR calculation for backtesting"""
-        var_percentile = (1 - confidence_level) * 100
-        return -np.percentile(returns, var_percentile)
+        try:
+            var_percentile = (1 - confidence_level) * 100
+            return -np.percentile(returns, var_percentile)
+        except Exception as e:
+            st.warning(f"Error in historical VaR calculation: {e}")
+            return 0
     
     def _calculate_monte_carlo_var_simple(self, returns, confidence_level, num_simulations=1000):
         """Simple Monte Carlo VaR calculation for backtesting"""
-        mu = returns.mean()
-        sigma = returns.std()
-        
-        np.random.seed(42)
-        simulated_returns = np.random.normal(mu, sigma, num_simulations)
-        
-        var_percentile = (1 - confidence_level) * 100
-        return -np.percentile(simulated_returns, var_percentile)
+        try:
+            mu = returns.mean()
+            sigma = returns.std()
+            
+            np.random.seed(42)
+            simulated_returns = np.random.normal(mu, sigma, num_simulations)
+            
+            var_percentile = (1 - confidence_level) * 100
+            return -np.percentile(simulated_returns, var_percentile)
+        except Exception as e:
+            st.warning(f"Error in Monte Carlo VaR calculation: {e}")
+            return 0
     
     def _kupiec_test(self, violations, observations, confidence_level):
         """Kupiec's Proportion of Failures (POF) test"""
         try:
+            if observations == 0:
+                return 0, 1.0
+                
             expected_rate = 1 - confidence_level
             observed_rate = violations / observations
             
@@ -122,14 +143,15 @@ class Backtesting:
             return lr, pvalue
             
         except Exception as e:
-            st.error(f"Error in Kupiec test: {str(e)}")
+            st.warning(f"Error in Kupiec test: {str(e)}")
             return 0, 1.0
     
     def _christoffersen_independence_test(self, violations):
         """Christoffersen's Independence test"""
         try:
-            violations_series = pd.Series(violations)
-            
+            if len(violations) < 2:
+                return 0, 1.0
+                
             # Transition matrix
             n00 = n01 = n10 = n11 = 0
             
@@ -148,7 +170,7 @@ class Backtesting:
             
             pi01 = n01 / (n00 + n01) if (n00 + n01) > 0 else 0
             pi11 = n11 / (n10 + n11) if (n10 + n11) > 0 else 0
-            pi = (n01 + n11) / (n00 + n01 + n10 + n11)
+            pi = (n01 + n11) / (n00 + n01 + n10 + n11) if (n00 + n01 + n10 + n11) > 0 else 0
             
             if pi01 == 0 or pi11 == 0 or pi == 0:
                 return 0, 1.0
@@ -166,7 +188,7 @@ class Backtesting:
             return lr, pvalue
             
         except Exception as e:
-            st.error(f"Error in Independence test: {str(e)}")
+            st.warning(f"Error in Independence test: {str(e)}")
             return 0, 1.0
     
     def _conditional_coverage_test(self, violations, confidence_level):
@@ -183,7 +205,7 @@ class Backtesting:
             return cc_lr, pvalue
             
         except Exception as e:
-            st.error(f"Error in Conditional Coverage test: {str(e)}")
+            st.warning(f"Error in Conditional Coverage test: {str(e)}")
             return 0, 1.0
     
     def basel_traffic_light(self, violations, expected_violations):
@@ -197,7 +219,7 @@ class Backtesting:
                 return "Red"
                 
         except Exception as e:
-            st.error(f"Error in Basel Traffic Light: {str(e)}")
+            st.warning(f"Error in Basel Traffic Light: {str(e)}")
             return "Unknown"
     
     def calculate_hit_ratio(self, violations, window_size=30):
@@ -215,7 +237,7 @@ class Backtesting:
             return hit_ratios
             
         except Exception as e:
-            st.error(f"Error calculating hit ratio: {str(e)}")
+            st.warning(f"Error calculating hit ratio: {str(e)}")
             return []
     
     def backtest_comparison(self, returns, confidence_level, window_size):

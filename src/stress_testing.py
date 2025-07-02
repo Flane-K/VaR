@@ -36,22 +36,19 @@ class StressTesting:
             # Get baseline VaR
             baseline_var = self._calculate_baseline_var(returns, confidence_level, time_horizon)
             
-            if scenario_type == "Custom Scenario":
-                # Custom scenario handled separately
-                stressed_returns = self._apply_custom_stress(returns, 50, 0.2, -20)
+            # Apply scenario
+            if scenario_type in self.historical_scenarios:
+                scenario = self.historical_scenarios[scenario_type]
+                stressed_returns = self._apply_historical_stress(returns, scenario)
             else:
-                # Historical scenario
-                if scenario_type in self.historical_scenarios:
-                    scenario = self.historical_scenarios[scenario_type]
-                    stressed_returns = self._apply_historical_stress(returns, scenario)
-                else:
-                    return {"error": "Unknown scenario type"}
+                st.warning(f"Unknown scenario type: {scenario_type}")
+                return {}
             
             # Calculate stressed VaR
             stressed_var = self._calculate_baseline_var(stressed_returns, confidence_level, time_horizon)
             
             # Calculate metrics
-            var_increase = ((stressed_var - baseline_var) / baseline_var) * 100
+            var_increase = ((stressed_var - baseline_var) / baseline_var) * 100 if baseline_var != 0 else 0
             worst_case = np.percentile(stressed_returns, 1) * 100000  # 1st percentile
             
             return {
@@ -67,13 +64,49 @@ class StressTesting:
             st.error(f"Error in stress testing: {str(e)}")
             return {}
     
+    def run_custom_stress_test(self, returns, vol_shock_pct, corr_shock, market_shock_pct, confidence_level, time_horizon=1):
+        """Run custom stress test on portfolio"""
+        try:
+            if len(returns) == 0:
+                return {}
+            
+            # Get baseline VaR
+            baseline_var = self._calculate_baseline_var(returns, confidence_level, time_horizon)
+            
+            # Apply custom stress
+            stressed_returns = self._apply_custom_stress(returns, vol_shock_pct, corr_shock, market_shock_pct)
+            
+            # Calculate stressed VaR
+            stressed_var = self._calculate_baseline_var(stressed_returns, confidence_level, time_horizon)
+            
+            # Calculate metrics
+            var_increase = ((stressed_var - baseline_var) / baseline_var) * 100 if baseline_var != 0 else 0
+            worst_case = np.percentile(stressed_returns, 1) * 100000  # 1st percentile
+            
+            return {
+                "baseline_var": baseline_var,
+                "stressed_var": stressed_var,
+                "var_increase": var_increase,
+                "worst_case": abs(worst_case),
+                "scenario_description": "Custom Scenario",
+                "stressed_returns": stressed_returns
+            }
+            
+        except Exception as e:
+            st.error(f"Error in custom stress testing: {str(e)}")
+            return {}
+    
     def _calculate_baseline_var(self, returns, confidence_level, time_horizon):
         """Calculate baseline VaR (parametric method)"""
-        mu = returns.mean()
-        sigma = returns.std()
-        z_score = stats.norm.ppf(1 - confidence_level)
-        var = -(mu * time_horizon + sigma * np.sqrt(time_horizon) * z_score)
-        return var * 100000  # Convert to dollar amount
+        try:
+            mu = returns.mean()
+            sigma = returns.std()
+            z_score = stats.norm.ppf(1 - confidence_level)
+            var = -(mu * time_horizon + sigma * np.sqrt(time_horizon) * z_score)
+            return var * 100000  # Convert to dollar amount
+        except Exception as e:
+            st.error(f"Error calculating baseline VaR: {str(e)}")
+            return 0
     
     def _apply_historical_stress(self, returns, scenario):
         """Apply historical stress scenario"""
