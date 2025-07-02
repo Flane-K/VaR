@@ -95,7 +95,10 @@ with st.sidebar:
     
     symbols_list = [] # Initialize symbols_list
     if data_source == "Live Market Data":
-        symbols = st.text_input("Enter symbols (comma-separated)", "AAPL,GOOGL,MSFT,TSLA")
+        if portfolio_type == "Single Asset":
+            symbols = st.text_input("Enter symbol", "AAPL")
+        else:  
+            symbols = st.text_input("Enter symbols (comma-separated)", "AAPL,GOOGL,MSFT,TSLA")
         symbols_list = [s.strip().upper() for s in symbols.split(",")]
     elif data_source == "CSV/XLSX Upload":
         uploaded_file = st.file_uploader("Upload CSV/XLSX file", type=["csv", "xlsx"])
