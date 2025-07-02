@@ -10,3 +10,4 @@ xlsxwriter
 python-dateutil
 requests
 urllib3
+ccxt

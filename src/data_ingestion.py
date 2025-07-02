@@ -11,23 +11,56 @@ class DataIngestion:
         self.returns = None
     
     def load_live_data(self, symbols, start_date, end_date):
-        """Load live market data from Yahoo Finance"""
+        """Load live market data from Yahoo Finance with crypto support"""
         try:
             if isinstance(symbols, str):
                 symbols = [symbols]
             
-            data = yf.download(symbols, start=start_date, end=end_date, progress=False)
+            # Separate crypto and regular symbols
+            crypto_symbols = [s for s in symbols if '-USD' in s]
+            regular_symbols = [s for s in symbols if '-USD' not in s]
             
-            if len(symbols) == 1:
-                # Single asset
-                self.data = data[['Adj Close']].copy()
-                self.data.columns = [symbols[0]]
+            all_data = pd.DataFrame()
+            
+            # Load regular symbols
+            if regular_symbols:
+                try:
+                    regular_data = yf.download(regular_symbols, start=start_date, end=end_date, progress=False)
+                    if not regular_data.empty:
+                        if len(regular_symbols) == 1:
+                            if 'Adj Close' in regular_data.columns:
+                                all_data[regular_symbols[0]] = regular_data['Adj Close']
+                            else:
+                                all_data[regular_symbols[0]] = regular_data['Close']
+                        else:
+                            if 'Adj Close' in regular_data.columns:
+                                all_data = pd.concat([all_data, regular_data['Adj Close']], axis=1)
+                            else:
+                                all_data = pd.concat([all_data, regular_data['Close']], axis=1)
+                except Exception as e:
+                    st.warning(f"Error loading regular symbols: {e}")
+            
+            # Load crypto symbols
+            if crypto_symbols:
+                try:
+                    crypto_data = yf.download(crypto_symbols, start=start_date, end=end_date, progress=False)
+                    if not crypto_data.empty:
+                        if len(crypto_symbols) == 1:
+                            all_data[crypto_symbols[0]] = crypto_data['Close']
+                        else:
+                            if isinstance(crypto_data.columns, pd.MultiIndex):
+                                all_data = pd.concat([all_data, crypto_data['Close']], axis=1)
+                            else:
+                                all_data[crypto_symbols[0]] = crypto_data['Close']
+                except Exception as e:
+                    st.warning(f"Error loading crypto symbols: {e}")
+            
+            if not all_data.empty:
+                self.data = all_data
+                self.returns = self.data.pct_change().dropna()
+                return self.data
             else:
-                # Multiple assets
-                self.data = data['Adj Close'].copy()
-            
-            self.returns = self.data.pct_change().dropna()
-            return self.data
+                return None
             
         except Exception as e:
             st.error(f"Error loading market data: {str(e)}")
@@ -70,6 +103,37 @@ class DataIngestion:
             
         except Exception as e:
             st.error(f"Error creating manual data: {str(e)}")
+            return None
+    
+    def generate_synthetic_data(self, num_days=500, initial_price=100, annual_return=0.08, annual_volatility=0.20, random_seed=42):
+        """Generate synthetic stock price data using geometric Brownian motion"""
+        try:
+            np.random.seed(random_seed)
+            
+            # Convert annual parameters to daily
+            daily_return = annual_return / 252
+            daily_volatility = annual_volatility / np.sqrt(252)
+            
+            # Generate dates
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=num_days)
+            dates = pd.date_range(start=start_date, end=end_date, freq='D')
+            
+            # Generate price series using geometric Brownian motion
+            prices = [initial_price]
+            for i in range(1, len(dates)):
+                random_shock = np.random.normal(0, 1)
+                price_change = prices[-1] * (daily_return + daily_volatility * random_shock)
+                new_price = prices[-1] + price_change
+                prices.append(max(new_price, 0.01))  # Ensure positive prices
+            
+            # Create DataFrame
+            self.data = pd.DataFrame({'Price': prices}, index=dates)
+            self.returns = self.data.pct_change().dropna()
+            return self.data
+            
+        except Exception as e:
+            st.error(f"Error generating synthetic data: {str(e)}")
             return None
     
     def get_portfolio_returns(self, weights=None):
@@ -159,4 +223,25 @@ class DataIngestion:
             
         except Exception as e:
             st.error(f"Error handling missing data: {str(e)}")
+            return None
+    
+    def get_crypto_symbols(self):
+        """Get list of popular crypto symbols for yfinance"""
+        return [
+            'BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD', 'ADA-USD',
+            'SOL-USD', 'DOGE-USD', 'DOT-USD', 'AVAX-USD', 'SHIB-USD',
+            'MATIC-USD', 'LTC-USD', 'UNI-USD', 'LINK-USD', 'ATOM-USD'
+        ]
+    
+    def validate_crypto_symbol(self, symbol):
+        """Validate if a crypto symbol is properly formatted"""
+        return symbol.upper().endswith('-USD')
+    
+    def load_mixed_portfolio(self, regular_symbols, crypto_symbols, start_date, end_date):
+        """Load a mixed portfolio of regular stocks and crypto"""
+        try:
+            all_symbols = regular_symbols + crypto_symbols
+            return self.load_live_data(all_symbols, start_date, end_date)
+        except Exception as e:
+            st.error(f"Error loading mixed portfolio: {str(e)}")
             return None
