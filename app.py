@@ -11,6 +11,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # Import custom modules
+from src.option_data_fetcher import OptionsDataFetcher
 from src.data_ingestion import DataIngestion
 from src.var_engines import VaREngines
 from src.backtesting import Backtesting
@@ -19,7 +20,6 @@ from src.rolling_analysis import RollingAnalysis
 from src.options_var import OptionsVaR
 from src.visualization import Visualization
 from src.utils import Utils
-from src.option_data_fetcher import OptionsDataFetcher
 
 # Page configuration
 st.set_page_config(
@@ -87,8 +87,7 @@ def black_scholes_price(S, K, T, r, sigma, option_type='call'):
             price = K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
         
         return max(price, 0)
-    except Exception as e:
-        st.error(f"Error calculating Black-Scholes price: {str(e)}")
+    except:
         return 0
 
 def calculate_option_greeks(S, K, T, r, sigma, option_type='call'):
@@ -126,22 +125,10 @@ def calculate_option_greeks(S, K, T, r, sigma, option_type='call'):
             'theta': theta,
             'vega': vega
         }
-    except Exception as e:
-        st.error(f"Error calculating Greeks: {str(e)}")
+    except:
         return {'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0}
 
-def calculate_time_to_expiry(expiry_date_str):
-    """Calculate time to expiry in years from expiry date string"""
-    try:
-        expiry_date = datetime.strptime(expiry_date_str, '%Y-%m-%d').date()
-        today = datetime.now().date()
-        days_to_expiry = (expiry_date - today).days
-        return max(days_to_expiry / 365.0, 0.001)  # Minimum 1 day
-    except Exception as e:
-        st.error(f"Error calculating time to expiry: {str(e)}")
-        return 0.25  # Default 3 months
-
-def generate_option_synthetic_data(S0, K, T, r, sigma, option_type, num_days=252):
+def generate_option_synthetic_data(S0, K, T, r, sigma, option_type, underlying_symbol, num_days=252):
     """Generate synthetic option price data using Black-Scholes"""
     try:
         dates = pd.date_range(start=datetime.now() - timedelta(days=num_days), 
@@ -168,11 +155,11 @@ def generate_option_synthetic_data(S0, K, T, r, sigma, option_type, num_days=252
                     option_price = max(K - S, 0)
             option_prices.append(option_price)
         
-        # Create DataFrame
+        # Create DataFrame with proper column names
         data = pd.DataFrame({
             'Date': dates[:len(option_prices)],
-            'Underlying': underlying_prices[:len(option_prices)],
-            'Option': option_prices
+            underlying_symbol: underlying_prices[:len(option_prices)],
+            'Option_Price': option_prices
         })
         data.set_index('Date', inplace=True)
         
@@ -282,30 +269,55 @@ def initialize_session_state():
         st.session_state.var_results = {}
     if 'model_changed' not in st.session_state:
         st.session_state.model_changed = False
-    if 'options_data_raw' not in st.session_state:
-        st.session_state.options_data_raw = None
-    if 'options_expirations' not in st.session_state:
-        st.session_state.options_expirations = []
-    if 'spot_price_live' not in st.session_state:
-        st.session_state.spot_price_live = 150.0
+    if 'options_data' not in st.session_state:
+        st.session_state.options_data = None
     if 'selected_option' not in st.session_state:
         st.session_state.selected_option = None
+    if 'options_expirations' not in st.session_state:
+        st.session_state.options_expirations = None
+    if 'option_params' not in st.session_state:
+        st.session_state.option_params = None
+    if 'symbols' not in st.session_state:
+        st.session_state.symbols = []
+    if 'weights' not in st.session_state:
+        st.session_state.weights = []
+    # Track current configuration to detect changes
+    if 'current_portfolio_type' not in st.session_state:
+        st.session_state.current_portfolio_type = None
+    if 'current_data_source' not in st.session_state:
+        st.session_state.current_data_source = None
+
+def reset_data_on_config_change(portfolio_type, data_source):
+    """Reset session state when portfolio type or data source changes"""
+    config_changed = False
+    
+    if st.session_state.current_portfolio_type != portfolio_type:
+        st.session_state.current_portfolio_type = portfolio_type
+        config_changed = True
+    
+    if st.session_state.current_data_source != data_source:
+        st.session_state.current_data_source = data_source
+        config_changed = True
+    
+    if config_changed:
+        # Reset data-related session state
+        st.session_state.data_loaded = False
+        st.session_state.current_data = None
+        st.session_state.current_returns = None
+        st.session_state.options_data = None
+        st.session_state.selected_option = None
+        st.session_state.options_expirations = None
+        st.session_state.option_params = None
+        st.session_state.symbols = []
+        st.session_state.weights = []
+        st.session_state.var_results = {}
+        
+        if config_changed:
+            st.info("Configuration changed. Please load data again.")
 
 def main():
     # Initialize session state
     initialize_session_state()
-
-    # Initialize default options variables to prevent UnboundLocalError
-    underlying = "AAPL"
-    spot_price = 150.0
-    strike_price = 155.0
-    time_to_expiry = 0.25
-    risk_free_rate = 0.05
-    volatility = 0.25
-    option_type = "call"
-    quantity = 100
-    symbols = ["AAPL"]
-    weights = [1.0]
 
     # Main header
     st.markdown('<h1 class="main-header">📊 VaR & Risk Analytics Platform</h1>', unsafe_allow_html=True)
@@ -319,11 +331,9 @@ def main():
         'rolling_analysis': RollingAnalysis(),
         'options_var': OptionsVaR(),
         'visualization': Visualization(),
-        'utils': Utils()
+        'utils': Utils(),
+        'options_fetcher': OptionsDataFetcher()
     }
-
-    # Initialize options data fetcher
-    options_fetcher = OptionsDataFetcher()
 
     # Sidebar configuration
     with st.sidebar:
@@ -348,6 +358,9 @@ def main():
         else:
             # For options portfolio, we'll handle data source internally
             data_source = "Options Data"
+
+        # Check for configuration changes and reset if needed
+        reset_data_on_config_change(portfolio_type, data_source)
 
         # VaR Model Selection
         st.subheader("🎯 VaR Model")
@@ -415,6 +428,16 @@ def main():
                 key="options_data_source_select"
             )
             
+            # Initialize default values for options parameters
+            underlying = "AAPL"
+            spot_price = 150.0
+            strike_price = 155.0
+            time_to_expiry = 0.25
+            risk_free_rate = 0.05
+            volatility = 0.25
+            option_type_str = "Call"
+            quantity = 100
+            
             if options_data_source == "Live Market Data":
                 st.write("**Live Market Options:**")
                 underlying = st.text_input("Underlying Symbol", "AAPL", key="options_underlying_input")
@@ -423,45 +446,50 @@ def main():
                 if st.button("🔄 Fetch Options Data", key="fetch_options_button"):
                     with st.spinner("Fetching options data..."):
                         try:
-                            # Use OptionsDataFetcher instead of local function
-                            fetched_options_data = options_fetcher.get_options_data(underlying)
-                            
-                            if fetched_options_data is not None and fetched_options_data.get('options_chains'):
-                                st.session_state.options_data_raw = fetched_options_data
-                                st.session_state.options_expirations = fetched_options_data['expiry_dates']
-                                st.session_state.spot_price_live = fetched_options_data['current_price']
+                            options_data = instances['options_fetcher'].get_options_data(underlying, use_synthetic=False)
+                            if options_data and options_data.get('options_chains'):
+                                st.session_state.options_data = options_data
+                                st.session_state.options_expirations = options_data.get('expiry_dates', [])
+                                spot_price = options_data.get('current_price', 150.0)
                                 st.success(f"✅ Fetched options data for {underlying}")
                             else:
-                                st.error(f"❌ Could not fetch options data for {underlying}")
+                                st.warning(f"Could not fetch live options data for {underlying}. Using synthetic data.")
+                                options_data = instances['options_fetcher'].generate_synthetic_options_data(underlying, spot_price)
+                                st.session_state.options_data = options_data
+                                st.session_state.options_expirations = options_data.get('expiry_dates', [])
                         except Exception as e:
-                            st.error(f"❌ Error fetching options data: {str(e)}")
+                            st.error(f"Error fetching options data: {str(e)}")
+                            st.info("Generating synthetic options data for demonstration.")
+                            options_data = instances['options_fetcher'].generate_synthetic_options_data(underlying, spot_price)
+                            st.session_state.options_data = options_data
+                            st.session_state.options_expirations = options_data.get('expiry_dates', [])
                 
                 # Options selection if data is available
-                if st.session_state.options_data_raw is not None and st.session_state.options_expirations:
-                    # Expiry selection
-                    selected_expiry = st.selectbox(
-                        "Expiry Date",
-                        st.session_state.options_expirations,
-                        key="live_expiry_select"
-                    )
+                if hasattr(st.session_state, 'options_data') and st.session_state.options_data is not None:
+                    option_type_str = st.selectbox("Option Type", ["Call", "Put"], key="live_option_type_select")
                     
-                    option_type_display = st.selectbox("Option Type", ["Call", "Put"], key="live_option_type_select")
-                    option_type = option_type_display.lower()
-                    
-                    # Get the appropriate options dataframe
-                    options_chains = st.session_state.options_data_raw['options_chains']
-                    if selected_expiry in options_chains:
-                        if option_type == "call":
-                            options_df = options_chains[selected_expiry].get('calls', pd.DataFrame())
+                    # Get available expiry dates
+                    available_expiries = list(st.session_state.options_data.get('options_chains', {}).keys())
+                    if available_expiries:
+                        selected_expiry = st.selectbox(
+                            "Expiry Date",
+                            available_expiries[:5],  # Show first 5 expiries
+                            key="live_expiry_select"
+                        )
+                        
+                        # Get the appropriate options dataframe
+                        chain_data = st.session_state.options_data['options_chains'].get(selected_expiry, {})
+                        if option_type_str == "Call":
+                            options_df = chain_data.get('calls', pd.DataFrame())
                         else:
-                            options_df = options_chains[selected_expiry].get('puts', pd.DataFrame())
+                            options_df = chain_data.get('puts', pd.DataFrame())
                         
                         if not options_df.empty:
                             # Strike selection
                             available_strikes = sorted(options_df['strike'].unique())
                             default_strike_idx = len(available_strikes) // 2  # Middle strike as default
                             
-                            strike_price = st.selectbox(
+                            selected_strike = st.selectbox(
                                 "Strike Price",
                                 available_strikes,
                                 index=default_strike_idx,
@@ -469,30 +497,31 @@ def main():
                             )
                             
                             # Find the selected option
-                            selected_option_data = options_df[options_df['strike'] == strike_price].iloc[0]
+                            selected_option_data = options_df[options_df['strike'] == selected_strike].iloc[0]
                             
                             # Display option details
                             col1, col2 = st.columns(2)
                             with col1:
-                                st.write(f"**Strike:** ${strike_price}")
+                                st.write(f"**Strike:** ${selected_strike}")
                                 st.write(f"**Last Price:** ${selected_option_data.get('lastPrice', 0):.2f}")
                             with col2:
                                 st.write(f"**Bid:** ${selected_option_data.get('bid', 0):.2f}")
                                 st.write(f"**Ask:** ${selected_option_data.get('ask', 0):.2f}")
                             
                             # Set parameters for calculations
-                            spot_price = st.session_state.spot_price_live
-                            time_to_expiry = calculate_time_to_expiry(selected_expiry)
+                            spot_price = st.session_state.options_data.get('current_price', 150.0)
+                            strike_price = selected_strike
+                            # Calculate time to expiry
+                            expiry_date = datetime.strptime(selected_expiry, '%Y-%m-%d').date()
+                            days_to_expiry = (expiry_date - datetime.now().date()).days
+                            time_to_expiry = max(days_to_expiry / 365.0, 0.01)  # Minimum 1 day
                             risk_free_rate = 0.05
                             volatility = selected_option_data.get('impliedVolatility', 0.25)
                             quantity = st.number_input("Quantity", 1, 1000, 100, 1, key="live_quantity_input")
-                            
-                            symbols = [underlying]
-                            weights = [1.0]
                         else:
                             st.warning("No options data available for the selected type and expiry")
                     else:
-                        st.warning("Selected expiry not available in options data")
+                        st.warning("No expiry dates available")
             
             if options_data_source == "Manual Entry":
                 st.write("**Manual Options Entry:**")
@@ -502,12 +531,11 @@ def main():
                 time_to_expiry = st.number_input("Time to Expiry (years)", 0.01, 2.0, 0.25, 0.01, key="manual_time_expiry_input")
                 risk_free_rate = st.number_input("Risk-free Rate", 0.0, 0.1, 0.05, 0.001, key="manual_risk_free_input")
                 volatility = st.number_input("Volatility", 0.1, 1.0, 0.25, 0.01, key="manual_volatility_input")
-                option_type_display = st.selectbox("Option Type", ["Call", "Put"], key="manual_option_type_select")
-                option_type = option_type_display.lower()
+                option_type_str = st.selectbox("Option Type", ["Call", "Put"], key="manual_option_type_select")
                 quantity = st.number_input("Quantity", 1, 1000, 100, 1, key="manual_quantity_input")
 
-                symbols = [underlying]
-                weights = [1.0]
+            symbols = [underlying]
+            weights = [1.0]
             
             st.markdown('</div>', unsafe_allow_html=True)
 
@@ -581,14 +609,14 @@ def main():
                         # Generate or load options data
                         data = generate_option_synthetic_data(
                             spot_price, strike_price, time_to_expiry, 
-                            risk_free_rate, volatility, option_type
+                            risk_free_rate, volatility, option_type_str.lower(), underlying
                         )
                         
                         if data is not None:
                             st.session_state.current_data = data
-                            st.session_state.current_returns = data['Option'].pct_change().dropna()
+                            st.session_state.current_returns = data['Option_Price'].pct_change().dropna()
                             st.session_state.data_loaded = True
-                            st.session_state.symbols = [f"{underlying}_{option_type}_{strike_price}"]
+                            st.session_state.symbols = [f"{underlying}_{option_type_str}_{strike_price}"]
                             st.session_state.weights = [1.0]
                             st.session_state.option_params = {
                                 'underlying': underlying,
@@ -597,7 +625,7 @@ def main():
                                 'time_to_expiry': time_to_expiry,
                                 'risk_free_rate': risk_free_rate,
                                 'volatility': volatility,
-                                'option_type': option_type,
+                                'option_type': option_type_str.lower(),
                                 'quantity': quantity
                             }
                             st.success(f"✅ Successfully loaded options data for {underlying}")
@@ -655,7 +683,7 @@ def main():
             if portfolio_type == "Options Portfolio":
                 # Options-specific VaR calculation
                 var_result = calculate_options_var_comprehensive(
-                    var_portfolio_returns, confidence_level, var_model.lower().replace(' ', '_').replace('(', '').replace(')', '').replace('-', '_')
+                    var_portfolio_returns, confidence_level, var_model.lower().replace(' ', '_')
                 )
                 expected_shortfall = calculate_options_var_comprehensive(
                     var_portfolio_returns[var_portfolio_returns <= -var_result], 0.5, 'historical'
@@ -721,7 +749,7 @@ def main():
                 st.header("📊 Options Risk Analytics Dashboard")
                 
                 # Options-specific metrics
-                if hasattr(st.session_state, 'option_params'):
+                if hasattr(st.session_state, 'option_params') and st.session_state.option_params:
                     params = st.session_state.option_params
                     
                     # Calculate current option price and Greeks
@@ -800,6 +828,8 @@ def main():
                             value=f"{var_percentage:.2f}%",
                             delta=f"{time_horizon} day horizon"
                         )
+                else:
+                    st.warning("No option parameters available. Please load options data first.")
             else:
                 st.header("📊 Risk Analytics Dashboard")
 
@@ -834,7 +864,7 @@ def main():
                         current_vol = st.session_state.current_returns.std() * np.sqrt(252) * 100
                         st.metric(
                             label="Annualized Volatility",
-                            value=f"{current_vol.iloc[0]:.2f}%",
+                            value=f"{current_vol:.2f}%",
                             delta="Historical"
                         )
 
@@ -852,7 +882,11 @@ def main():
             filtered_data = st.session_state.current_data.loc[mask]
             
             if portfolio_type == "Options Portfolio":
-                filtered_returns = filtered_data['Option'].pct_change().dropna()
+                if 'Option_Price' in filtered_data.columns:
+                    filtered_returns = filtered_data['Option_Price'].pct_change().dropna()
+                else:
+                    st.error("Option price data not found in the dataset")
+                    filtered_returns = pd.Series()
             else:
                 filtered_returns = filtered_data.pct_change().dropna()
                 if len(filtered_returns.shape) > 1:
@@ -864,11 +898,11 @@ def main():
             with col1:
                 if portfolio_type == "Options Portfolio":
                     st.subheader("Option Value Performance")
-                    if not filtered_data.empty:
+                    if not filtered_data.empty and 'Option_Price' in filtered_data.columns:
                         fig_perf = go.Figure()
                         fig_perf.add_trace(go.Scatter(
                             x=filtered_data.index,
-                            y=filtered_data['Option'].values,
+                            y=filtered_data['Option_Price'].values,
                             mode='lines',
                             name='Option Value',
                             line=dict(color='#00ff88', width=2)
@@ -918,7 +952,7 @@ def main():
             # Portfolio Statistics
             if portfolio_type == "Options Portfolio":
                 st.subheader("Options Statistics")
-                if hasattr(st.session_state, 'option_params'):
+                if hasattr(st.session_state, 'option_params') and st.session_state.option_params:
                     params = st.session_state.option_params
                     option_stats = {
                         'Underlying Symbol': params.get('underlying', 'N/A'),
@@ -956,7 +990,11 @@ def main():
             var_filtered_data = st.session_state.current_data.loc[var_mask]
             
             if portfolio_type == "Options Portfolio":
-                var_filtered_returns = var_filtered_data['Option'].pct_change().dropna()
+                if 'Option_Price' in var_filtered_data.columns:
+                    var_filtered_returns = var_filtered_data['Option_Price'].pct_change().dropna()
+                else:
+                    st.error("Option price data not found")
+                    var_filtered_returns = pd.Series()
             else:
                 var_filtered_returns = var_filtered_data.pct_change().dropna()
                 if len(var_filtered_returns.shape) > 1:
@@ -984,7 +1022,7 @@ def main():
                 comparison_results = {}
 
                 try:
-                    if portfolio_type == "Options Portfolio":
+                    if portfolio_type == "Options Portfolio" and not var_filtered_returns.empty:
                         comparison_results['Historical'] = calculate_options_var_comprehensive(
                             var_filtered_returns, confidence_level, 'historical'
                         )
@@ -994,7 +1032,7 @@ def main():
                         comparison_results['Monte Carlo'] = calculate_options_var_comprehensive(
                             var_filtered_returns, confidence_level, 'monte_carlo'
                         )
-                    else:
+                    elif not var_filtered_returns.empty:
                         comparison_results['Parametric'] = instances['var_engines'].calculate_parametric_var(
                             var_filtered_returns, confidence_level, time_horizon
                         )
@@ -1005,8 +1043,9 @@ def main():
                             var_filtered_returns, confidence_level, time_horizon, 5000
                         )
 
-                    comparison_df = create_metrics_dataframe(comparison_results, "Model Comparison")
-                    safe_dataframe_display(comparison_df, "Model Comparison", "var_comparison")
+                    if comparison_results:
+                        comparison_df = create_metrics_dataframe(comparison_results, "Model Comparison")
+                        safe_dataframe_display(comparison_df, "Model Comparison", "var_comparison")
 
                 except Exception as e:
                     st.warning(f"Error in model comparison: {str(e)}")
@@ -1025,7 +1064,7 @@ def main():
             # Data Summary
             st.subheader("📊 Data Summary")
             if portfolio_type == "Options Portfolio":
-                if hasattr(st.session_state, 'option_params'):
+                if hasattr(st.session_state, 'option_params') and st.session_state.option_params:
                     params = st.session_state.option_params
                     data_summary = {
                         'Data Type': 'Options Data',
@@ -1112,7 +1151,11 @@ def main():
             rolling_filtered_data = st.session_state.current_data.loc[rolling_mask]
             
             if portfolio_type == "Options Portfolio":
-                rolling_portfolio_returns = rolling_filtered_data['Option'].pct_change().dropna()
+                if 'Option_Price' in rolling_filtered_data.columns:
+                    rolling_portfolio_returns = rolling_filtered_data['Option_Price'].pct_change().dropna()
+                else:
+                    st.error("Option price data not found")
+                    rolling_portfolio_returns = pd.Series()
             else:
                 rolling_filtered_returns = rolling_filtered_data.pct_change().dropna()
                 if len(rolling_filtered_returns.shape) > 1:
@@ -1189,7 +1232,11 @@ def main():
             backtest_filtered_data = st.session_state.current_data.loc[backtest_mask]
             
             if portfolio_type == "Options Portfolio":
-                backtest_portfolio_returns = backtest_filtered_data['Option'].pct_change().dropna()
+                if 'Option_Price' in backtest_filtered_data.columns:
+                    backtest_portfolio_returns = backtest_filtered_data['Option_Price'].pct_change().dropna()
+                else:
+                    st.error("Option price data not found")
+                    backtest_portfolio_returns = pd.Series()
             else:
                 backtest_filtered_returns = backtest_filtered_data.pct_change().dropna()
                 if len(backtest_filtered_returns.shape) > 1:
@@ -1277,7 +1324,11 @@ def main():
             stress_filtered_data = st.session_state.current_data.loc[stress_mask]
             
             if portfolio_type == "Options Portfolio":
-                stress_portfolio_returns = stress_filtered_data['Option'].pct_change().dropna()
+                if 'Option_Price' in stress_filtered_data.columns:
+                    stress_portfolio_returns = stress_filtered_data['Option_Price'].pct_change().dropna()
+                else:
+                    st.error("Option price data not found")
+                    stress_portfolio_returns = pd.Series()
             else:
                 stress_filtered_returns = stress_filtered_data.pct_change().dropna()
                 if len(stress_filtered_returns.shape) > 1:
@@ -1426,7 +1477,7 @@ def main():
             - **Format**: Crypto symbols with -USD suffix (BTC-USD, ETH-USD, ADA-USD)
             
             #### Options Portfolio
-            - **Live Market**: Fetches real options data using enhanced OptionsDataFetcher
+            - **Live Market**: Fetches real options data using yfinance
             - **Manual Entry**: Configure custom option parameters
             - **Default**: AAPL call option (Strike: $155, Expiry: 3 months)
             
@@ -1439,25 +1490,6 @@ def main():
             {"4. **GARCH**: Advanced volatility modeling for time-varying risk" if portfolio_type != "Options Portfolio" else "4. **Historic Simulation**: Enhanced historical method for options"}
             {"5. **Extreme Value Theory (EVT)**: Tail risk modeling for extreme events" if portfolio_type != "Options Portfolio" else ""}
             
-            ### 🔧 Configuration Tips
-            
-            #### Risk Parameters
-            - **Confidence Levels**: 90%, 95%, 99% (95% is standard)
-            - **Time Horizons**: 1-30 days (1-day most common)
-            - **Historical Windows**: 30-1000 days (252 days = 1 trading year)
-            
-            #### Model-Specific Settings
-            - **Monte Carlo**: 10K simulations recommended for balance of speed/accuracy
-            - **GARCH**: (1,1) specification is industry standard
-            - **Backtesting**: 252-day window provides 1 year of validation
-            
-            {"#### Options-Specific Settings" if portfolio_type == "Options Portfolio" else ""}
-            {"- **Live Market**: Automatically fetches options data with caching and rate limiting" if portfolio_type == "Options Portfolio" else ""}
-            {"- **Manual Entry**: Full control over option parameters" if portfolio_type == "Options Portfolio" else ""}
-            {"- **Greeks Calculation**: Real-time Delta, Gamma, Theta, Vega" if portfolio_type == "Options Portfolio" else ""}
-            {"- **Time Decay**: Automatic theta impact calculation" if portfolio_type == "Options Portfolio" else ""}
-            {"- **Synthetic Fallback**: Generates realistic data when live data fails" if portfolio_type == "Options Portfolio" else ""}
-            
             ### 🚨 Troubleshooting
             
             #### Common Issues
@@ -1465,36 +1497,13 @@ def main():
             - **"GARCH model failed"**: Requires minimum 100 observations
             - **"Symbol not found"**: Verify ticker format (add -USD for crypto)
             - **"Weights don't sum to 1"**: Portfolio weights are automatically normalized
+            - **"Option price data not found"**: Reload data after changing portfolio type
             
             #### Options-Specific Issues
-            - **"No options data found"**: System automatically generates synthetic data
-            - **"Options chain empty"**: Fallback to synthetic data with realistic parameters
-            - **"Strike not available"**: System finds closest available strike
-            - **"Time to expiry too short"**: Minimum 1 day enforced automatically
-            
-            ### 📊 Output Interpretation
-            
-            #### VaR Results
-            - **VaR(95%, 1-day) = $10,000**: 95% confidence that daily losses won't exceed $10,000
-            - **Expected Shortfall**: Average loss when VaR threshold is breached
-            - **Model Comparison**: Side-by-side results from different methodologies
-            
-            #### Backtesting Metrics
-            - **Kupiec p-value > 0.05**: Model passes statistical validation
-            - **Violation Rate**: Should approximate (1 - confidence level)
-            - **Basel Traffic Light**: Green (good), Yellow (attention), Red (review required)
-            
-            ### 💡 Best Practices
-            
-            1. **Start Simple**: Begin with single asset and parametric VaR
-            2. **Validate Models**: Always run backtesting to verify model performance
-            3. **Compare Methods**: Use multiple VaR models for robust risk assessment
-            4. **Stress Test**: Regular stress testing reveals portfolio vulnerabilities
-            5. **Monitor Regularly**: Risk metrics should be updated frequently
-            
-            ### 📞 Support
-            
-            For additional support or questions about specific features, refer to the academic literature or consult with risk management professionals.
+            - **"No options data found"**: Symbol may not have listed options
+            - **"Options chain empty"**: Try a different expiry date
+            - **"Strike not available"**: System will find closest available strike
+            - **"Time to expiry too short"**: Minimum 1 day required
             """)
 
     else:
