@@ -7,9 +7,12 @@ class Backtesting:
     def __init__(self):
         pass
     
-    def perform_backtesting(self, returns, confidence_level, window_size, var_method):
+    def perform_backtesting(self, returns, confidence_level, window_size, var_method, portfolio_type="regular", options_data=None):
         """Perform backtesting of VaR model"""
         try:
+            if portfolio_type == "options" and options_data is not None:
+                return self.perform_options_backtesting(returns, confidence_level, window_size, var_method, options_data)
+            
             if len(returns) < window_size + 50:
                 st.warning("Insufficient data for backtesting")
                 return {}
@@ -82,6 +85,107 @@ class Backtesting:
             
         except Exception as e:
             st.error(f"Error in backtesting: {str(e)}")
+            return {}
+    
+    def perform_options_backtesting(self, underlying_returns, confidence_level, window_size, var_method, options_data):
+        """Perform backtesting for options portfolio"""
+        try:
+            from src.options_var import OptionsVaR
+            options_var = OptionsVaR()
+            
+            if len(underlying_returns) < window_size + 50:
+                st.warning("Insufficient data for options backtesting")
+                return {}
+            
+            # Initialize arrays
+            var_estimates = []
+            actual_pnl = []
+            violations = []
+            violations_dates = []
+            
+            # Rolling window backtesting for options
+            for i in range(window_size, len(underlying_returns)):
+                # Get historical window
+                hist_returns = underlying_returns.iloc[i-window_size:i]
+                
+                # Calculate current option price
+                current_price = options_var.black_scholes_price(
+                    options_data['spot_price'], options_data['strike_price'],
+                    options_data['time_to_expiry'], options_data['risk_free_rate'],
+                    options_data['volatility'], options_data['option_type']
+                )
+                
+                # Calculate VaR estimate
+                try:
+                    if var_method == "Historical Simulation":
+                        var_result = options_var.calculate_options_var_historical(
+                            options_data['spot_price'], options_data['strike_price'],
+                            options_data['time_to_expiry'], options_data['risk_free_rate'],
+                            options_data['volatility'], options_data['option_type'],
+                            hist_returns, confidence_level
+                        )
+                        var_est = var_result.get('var', 0)
+                    else:
+                        var_result = options_var.calculate_options_var(
+                            options_data['spot_price'], options_data['strike_price'],
+                            options_data['time_to_expiry'], options_data['risk_free_rate'],
+                            options_data['volatility'], options_data['option_type'],
+                            var_method, confidence_level
+                        )
+                        var_est = var_result.get('var', 0)
+                except Exception as e:
+                    st.warning(f"Error calculating options VaR at step {i}: {e}")
+                    var_est = 0
+                
+                # Calculate actual P&L
+                actual_return = underlying_returns.iloc[i]
+                new_spot = options_data['spot_price'] * (1 + actual_return)
+                new_time = max(options_data['time_to_expiry'] - 1/365, 0)
+                
+                new_price = options_var.black_scholes_price(
+                    new_spot, options_data['strike_price'],
+                    new_time, options_data['risk_free_rate'],
+                    options_data['volatility'], options_data['option_type']
+                )
+                
+                pnl = new_price - current_price
+                
+                # Check for violation (actual loss exceeds VaR)
+                violation = pnl < -var_est
+                
+                var_estimates.append(var_est)
+                actual_pnl.append(pnl)
+                violations.append(violation)
+                violations_dates.append(underlying_returns.index[i])
+            
+            # Calculate metrics
+            total_observations = len(violations)
+            total_violations = sum(violations)
+            expected_violations = total_observations * (1 - confidence_level)
+            violation_rate = total_violations / total_observations if total_observations > 0 else 0
+            
+            # Statistical tests
+            kupiec_lr, kupiec_pvalue = self._kupiec_test(total_violations, total_observations, confidence_level)
+            independence_lr, independence_pvalue = self._christoffersen_independence_test(violations)
+            cc_lr, cc_pvalue = self._conditional_coverage_test(violations, confidence_level)
+            
+            return {
+                'var_estimates': var_estimates,
+                'actual_pnl': actual_pnl,
+                'violations': total_violations,
+                'expected_violations': expected_violations,
+                'violation_rate': violation_rate,
+                'violations_dates': violations_dates,
+                'kupiec_lr': kupiec_lr,
+                'kupiec_pvalue': kupiec_pvalue,
+                'independence_lr': independence_lr,
+                'independence_pvalue': independence_pvalue,
+                'cc_lr': cc_lr,
+                'cc_pvalue': cc_pvalue
+            }
+            
+        except Exception as e:
+            st.error(f"Error in options backtesting: {str(e)}")
             return {}
     
     def _calculate_parametric_var_simple(self, returns, confidence_level):

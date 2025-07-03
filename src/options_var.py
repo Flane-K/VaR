@@ -101,6 +101,46 @@ class OptionsVaR:
             st.error(f"Error calculating options VaR: {str(e)}")
             return {}
     
+    def calculate_options_var_historical(self, S, K, T, r, sigma, option_type, underlying_returns, confidence_level):
+        """Calculate VaR for options using historical simulation"""
+        try:
+            # Calculate current option price and Greeks
+            current_price = self.black_scholes_price(S, K, T, r, sigma, option_type)
+            greeks = self.calculate_greeks(S, K, T, r, sigma, option_type)
+            
+            # Generate scenarios based on historical returns
+            scenarios = []
+            for ret in underlying_returns:
+                # Calculate new stock price
+                new_S = S * (1 + ret)
+                
+                # Calculate new option price (assuming 1 day time decay)
+                new_T = max(T - 1/365, 0)
+                new_option_price = self.black_scholes_price(new_S, K, new_T, r, sigma, option_type)
+                
+                # Calculate P&L
+                pnl = new_option_price - current_price
+                scenarios.append(pnl)
+            
+            # Calculate VaR
+            var_percentile = (1 - confidence_level) * 100
+            var = -np.percentile(scenarios, var_percentile)
+            
+            return {
+                'var': var,
+                'current_price': current_price,
+                'delta': greeks['delta'],
+                'gamma': greeks['gamma'],
+                'theta': greeks['theta'],
+                'vega': greeks['vega'],
+                'scenarios': scenarios,
+                'method': 'Historical Simulation'
+            }
+            
+        except Exception as e:
+            st.error(f"Error in Historical Simulation VaR: {str(e)}")
+            return {}
+    
     def _delta_normal_var(self, S, K, T, r, sigma, option_type, confidence_level):
         """Calculate VaR using Delta-Normal method"""
         try:

@@ -27,9 +27,12 @@ class StressTesting:
             }
         }
     
-    def run_stress_test(self, returns, scenario_type, confidence_level, time_horizon=1):
+    def run_stress_test(self, returns, scenario_type, confidence_level, time_horizon=1, portfolio_type="regular", options_data=None):
         """Run stress test on portfolio"""
         try:
+            if portfolio_type == "options" and options_data is not None:
+                return self.run_options_stress_test(options_data, scenario_type, confidence_level)
+            
             if len(returns) == 0:
                 return {}
             
@@ -64,9 +67,63 @@ class StressTesting:
             st.error(f"Error in stress testing: {str(e)}")
             return {}
     
-    def run_custom_stress_test(self, returns, vol_shock_pct, corr_shock, market_shock_pct, confidence_level, time_horizon=1):
+    def run_options_stress_test(self, options_data, scenario_type, confidence_level):
+        """Run stress test specifically for options"""
+        try:
+            from src.options_var import OptionsVaR
+            options_var = OptionsVaR()
+            
+            # Calculate baseline option VaR
+            baseline_var_result = options_var.calculate_options_var(
+                options_data['spot_price'], options_data['strike_price'],
+                options_data['time_to_expiry'], options_data['risk_free_rate'],
+                options_data['volatility'], options_data['option_type'],
+                "Delta-Gamma", confidence_level
+            )
+            baseline_var = baseline_var_result.get('var', 0)
+            
+            # Apply stress scenario
+            if scenario_type in self.historical_scenarios:
+                scenario = self.historical_scenarios[scenario_type]
+                
+                # Stress the underlying parameters
+                stressed_spot = options_data['spot_price'] * (1 + scenario['market_shock'] / 100)
+                stressed_vol = options_data['volatility'] * (1 + scenario['volatility_shock'] / 100)
+                
+                # Calculate stressed VaR
+                stressed_var_result = options_var.calculate_options_var(
+                    stressed_spot, options_data['strike_price'],
+                    options_data['time_to_expiry'], options_data['risk_free_rate'],
+                    stressed_vol, options_data['option_type'],
+                    "Delta-Gamma", confidence_level
+                )
+                stressed_var = stressed_var_result.get('var', 0)
+                
+                # Calculate metrics
+                var_increase = ((stressed_var - baseline_var) / baseline_var) * 100 if baseline_var != 0 else 0
+                
+                return {
+                    "baseline_var": baseline_var,
+                    "stressed_var": stressed_var,
+                    "var_increase": var_increase,
+                    "scenario_description": scenario_type,
+                    "stressed_spot": stressed_spot,
+                    "stressed_vol": stressed_vol
+                }
+            else:
+                st.warning(f"Unknown scenario type: {scenario_type}")
+                return {}
+                
+        except Exception as e:
+            st.error(f"Error in options stress testing: {str(e)}")
+            return {}
+    
+    def run_custom_stress_test(self, returns, vol_shock_pct, corr_shock, market_shock_pct, confidence_level, time_horizon=1, portfolio_type="regular", options_data=None):
         """Run custom stress test on portfolio"""
         try:
+            if portfolio_type == "options" and options_data is not None:
+                return self.run_custom_options_stress_test(options_data, vol_shock_pct, market_shock_pct, confidence_level)
+            
             if len(returns) == 0:
                 return {}
             
@@ -94,6 +151,50 @@ class StressTesting:
             
         except Exception as e:
             st.error(f"Error in custom stress testing: {str(e)}")
+            return {}
+    
+    def run_custom_options_stress_test(self, options_data, vol_shock_pct, market_shock_pct, confidence_level):
+        """Run custom stress test for options"""
+        try:
+            from src.options_var import OptionsVaR
+            options_var = OptionsVaR()
+            
+            # Calculate baseline option VaR
+            baseline_var_result = options_var.calculate_options_var(
+                options_data['spot_price'], options_data['strike_price'],
+                options_data['time_to_expiry'], options_data['risk_free_rate'],
+                options_data['volatility'], options_data['option_type'],
+                "Delta-Gamma", confidence_level
+            )
+            baseline_var = baseline_var_result.get('var', 0)
+            
+            # Apply custom stress
+            stressed_spot = options_data['spot_price'] * (1 + market_shock_pct / 100)
+            stressed_vol = options_data['volatility'] * (1 + vol_shock_pct / 100)
+            
+            # Calculate stressed VaR
+            stressed_var_result = options_var.calculate_options_var(
+                stressed_spot, options_data['strike_price'],
+                options_data['time_to_expiry'], options_data['risk_free_rate'],
+                stressed_vol, options_data['option_type'],
+                "Delta-Gamma", confidence_level
+            )
+            stressed_var = stressed_var_result.get('var', 0)
+            
+            # Calculate metrics
+            var_increase = ((stressed_var - baseline_var) / baseline_var) * 100 if baseline_var != 0 else 0
+            
+            return {
+                "baseline_var": baseline_var,
+                "stressed_var": stressed_var,
+                "var_increase": var_increase,
+                "scenario_description": "Custom Scenario",
+                "stressed_spot": stressed_spot,
+                "stressed_vol": stressed_vol
+            }
+            
+        except Exception as e:
+            st.error(f"Error in custom options stress testing: {str(e)}")
             return {}
     
     def _calculate_baseline_var(self, returns, confidence_level, time_horizon):
@@ -163,13 +264,13 @@ class StressTesting:
             st.error(f"Error applying custom stress: {str(e)}")
             return returns
     
-    def scenario_analysis(self, returns, scenarios_list, confidence_level):
+    def scenario_analysis(self, returns, scenarios_list, confidence_level, portfolio_type="regular", options_data=None):
         """Analyze multiple scenarios"""
         try:
             results = {}
             
             for scenario in scenarios_list:
-                scenario_result = self.run_stress_test(returns, scenario, confidence_level)
+                scenario_result = self.run_stress_test(returns, scenario, confidence_level, portfolio_type=portfolio_type, options_data=options_data)
                 results[scenario] = scenario_result
             
             return results
@@ -178,16 +279,21 @@ class StressTesting:
             st.error(f"Error in scenario analysis: {str(e)}")
             return {}
     
-    def sensitivity_analysis(self, returns, confidence_level, shock_range=[-50, 50], num_points=11):
+    def sensitivity_analysis(self, returns, confidence_level, shock_range=[-50, 50], num_points=11, portfolio_type="regular", options_data=None):
         """Perform sensitivity analysis"""
         try:
             shocks = np.linspace(shock_range[0], shock_range[1], num_points)
             sensitivity_results = []
             
             for shock in shocks:
-                # Apply market shock
-                shocked_returns = self._apply_custom_stress(returns, 0, 0, shock)
-                shocked_var = self._calculate_baseline_var(shocked_returns, confidence_level, 1)
+                if portfolio_type == "options" and options_data is not None:
+                    # Options sensitivity analysis
+                    result = self.run_custom_options_stress_test(options_data, 0, shock, confidence_level)
+                    shocked_var = result.get('stressed_var', 0)
+                else:
+                    # Regular portfolio sensitivity analysis
+                    shocked_returns = self._apply_custom_stress(returns, 0, 0, shock)
+                    shocked_var = self._calculate_baseline_var(shocked_returns, confidence_level, 1)
                 
                 sensitivity_results.append({
                     'shock': shock,
@@ -267,23 +373,38 @@ class StressTesting:
             st.error(f"Error in correlation stress test: {str(e)}")
             return {}
     
-    def tail_risk_analysis(self, returns, confidence_levels=[0.95, 0.99, 0.999]):
+    def tail_risk_analysis(self, returns, confidence_levels=[0.95, 0.99, 0.999], portfolio_type="regular", options_data=None):
         """Analyze tail risk at different confidence levels"""
         try:
             tail_risk_results = {}
             
             for cl in confidence_levels:
-                var = self._calculate_baseline_var(returns, cl, 1)
-                
-                # Calculate Expected Shortfall
-                var_percentile = (1 - cl) * 100
-                var_threshold = np.percentile(returns, var_percentile)
-                tail_returns = returns[returns <= var_threshold]
-                
-                if len(tail_returns) > 0:
-                    expected_shortfall = -tail_returns.mean() * 100000
+                if portfolio_type == "options" and options_data is not None:
+                    # Options tail risk analysis
+                    from src.options_var import OptionsVaR
+                    options_var = OptionsVaR()
+                    
+                    var_result = options_var.calculate_options_var(
+                        options_data['spot_price'], options_data['strike_price'],
+                        options_data['time_to_expiry'], options_data['risk_free_rate'],
+                        options_data['volatility'], options_data['option_type'],
+                        "Delta-Gamma", cl
+                    )
+                    var = var_result.get('var', 0)
+                    expected_shortfall = var * 1.2  # Approximation for options ES
                 else:
-                    expected_shortfall = var
+                    # Regular portfolio tail risk analysis
+                    var = self._calculate_baseline_var(returns, cl, 1)
+                    
+                    # Calculate Expected Shortfall
+                    var_percentile = (1 - cl) * 100
+                    var_threshold = np.percentile(returns, var_percentile)
+                    tail_returns = returns[returns <= var_threshold]
+                    
+                    if len(tail_returns) > 0:
+                        expected_shortfall = -tail_returns.mean() * 100000
+                    else:
+                        expected_shortfall = var
                 
                 tail_risk_results[f"{cl*100:.1f}%"] = {
                     "VaR": var,
@@ -296,22 +417,22 @@ class StressTesting:
             st.error(f"Error in tail risk analysis: {str(e)}")
             return {}
     
-    def generate_stress_report(self, returns, confidence_level):
+    def generate_stress_report(self, returns, confidence_level, portfolio_type="regular", options_data=None):
         """Generate comprehensive stress testing report"""
         try:
             report = {}
             
             # Run all historical scenarios
             for scenario_name in self.historical_scenarios.keys():
-                scenario_result = self.run_stress_test(returns, scenario_name, confidence_level)
+                scenario_result = self.run_stress_test(returns, scenario_name, confidence_level, portfolio_type=portfolio_type, options_data=options_data)
                 report[scenario_name] = scenario_result
             
             # Add sensitivity analysis
-            sensitivity = self.sensitivity_analysis(returns, confidence_level)
+            sensitivity = self.sensitivity_analysis(returns, confidence_level, portfolio_type=portfolio_type, options_data=options_data)
             report["Sensitivity_Analysis"] = sensitivity
             
             # Add tail risk analysis
-            tail_risk = self.tail_risk_analysis(returns)
+            tail_risk = self.tail_risk_analysis(returns, portfolio_type=portfolio_type, options_data=options_data)
             report["Tail_Risk_Analysis"] = tail_risk
             
             return report

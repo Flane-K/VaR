@@ -17,6 +17,33 @@ class Visualization:
             'error': '#ff5757'
         }
     
+    def plot_performance_chart(self, cumulative_returns):
+        """Plot performance chart for cumulative returns"""
+        try:
+            fig = go.Figure()
+            
+            fig.add_trace(go.Scatter(
+                x=cumulative_returns.index,
+                y=cumulative_returns.values,
+                mode='lines',
+                name='Cumulative Returns',
+                line=dict(color=self.colors['primary'], width=2)
+            ))
+            
+            fig.update_layout(
+                title="Portfolio Performance",
+                xaxis_title="Date",
+                yaxis_title="Cumulative Returns",
+                template="plotly_dark",
+                height=500
+            )
+            
+            return fig
+            
+        except Exception as e:
+            st.error(f"Error creating performance chart: {str(e)}")
+            return go.Figure()
+    
     def plot_var_distribution(self, returns, confidence_level, var_value):
         """Plot returns distribution with VaR threshold"""
         try:
