@@ -424,7 +424,7 @@ def main():
                     current_vol = st.session_state.current_returns.std() * np.sqrt(252) * 100
                     st.metric(
                         label="Annualized Volatility",
-                        value=f"{current_vol:.2f}%",
+                        value=f"{int(current_vol):.2f}%",
                         delta="Historical"
                     )
             
