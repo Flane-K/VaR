@@ -1670,11 +1670,7 @@ def display_help_content(portfolio_type):
     - **"Symbol not found"**: Verify ticker format (add -USD for crypto)
     - **"Weights don't sum to 1"**: Portfolio weights are automatically normalized
     
-    {"#### Options-Specific Issues" if portfolio_type == "Options Portfolio" else ""}
-    {"- **"No options data found"**: Symbol may not have listed options" if portfolio_type == "Options Portfolio" else ""}
-    {"- **"Options chain empty"**: Try a different expiry date" if portfolio_type == "Options Portfolio" else ""}
-    {"- **"Strike not available"**: System will find closest available strike" if portfolio_type == "Options Portfolio" else ""}
-    {"- **"Time to expiry too short"**: Minimum 1 day required" if portfolio_type == "Options Portfolio" else ""}
+
     
     #### Cryptocurrency Issues
     - **API Failures**: System automatically generates realistic synthetic crypto data
