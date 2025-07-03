@@ -44,6 +44,13 @@ st.markdown("""
         border-radius: 0.5rem;
         border-left: 4px solid #00ff88;
     }
+    .options-config {
+        background-color: #1e3a8a20;
+        border: 2px solid #3b82f6;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
     .warning-box {
         background-color: #ffd93d20;
         border: 1px solid #ffd93d;
@@ -58,25 +65,24 @@ st.markdown("""
         padding: 1rem;
         margin: 1rem 0;
     }
-    .options-highlight {
-        background-color: #4a90e220;
-        border: 2px solid #4a90e2;
-        border-radius: 0.5rem;
-        padding: 1rem;
-        margin: 1rem 0;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 def black_scholes_price(S, K, T, r, sigma, option_type='call'):
     """Calculate Black-Scholes option price"""
     try:
+        if T <= 0:
+            if option_type == 'call':
+                return max(S - K, 0)
+            else:
+                return max(K - S, 0)
+        
         d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
         d2 = d1 - sigma * np.sqrt(T)
         
-        if option_type.lower() == 'call':
+        if option_type == 'call':
             price = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
-        else:  # put
+        else:
             price = K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
         
         return max(price, 0)
@@ -86,11 +92,14 @@ def black_scholes_price(S, K, T, r, sigma, option_type='call'):
 def calculate_option_greeks(S, K, T, r, sigma, option_type='call'):
     """Calculate option Greeks"""
     try:
+        if T <= 0:
+            return {'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0}
+        
         d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
         d2 = d1 - sigma * np.sqrt(T)
         
         # Delta
-        if option_type.lower() == 'call':
+        if option_type == 'call':
             delta = norm.cdf(d1)
         else:
             delta = norm.cdf(d1) - 1
@@ -99,7 +108,7 @@ def calculate_option_greeks(S, K, T, r, sigma, option_type='call'):
         gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
         
         # Theta
-        if option_type.lower() == 'call':
+        if option_type == 'call':
             theta = (-S * norm.pdf(d1) * sigma / (2 * np.sqrt(T)) 
                     - r * K * np.exp(-r * T) * norm.cdf(d2)) / 365
         else:
@@ -119,67 +128,81 @@ def calculate_option_greeks(S, K, T, r, sigma, option_type='call'):
         return {'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0}
 
 def get_options_chain(symbol):
-    """Fetch options chain for a symbol"""
+    """Fetch options chain from yfinance"""
     try:
         ticker = yf.Ticker(symbol)
-        options_dates = ticker.options
         
-        if not options_dates:
+        # Get available expiration dates
+        expirations = ticker.options
+        if not expirations:
+            st.warning(f"No options data available for {symbol}")
             return None, None
         
-        # Get options for the first available date
-        options_data = ticker.option_chain(options_dates[0])
-        calls = options_data.calls
-        puts = options_data.puts
+        # Get options chain for the first available expiration
+        options_chain = ticker.option_chain(expirations[0])
         
-        return calls, puts, options_dates
-    except:
-        return None, None, None
+        return options_chain, expirations
+    except Exception as e:
+        st.error(f"Error fetching options data for {symbol}: {str(e)}")
+        return None, None
 
-def find_closest_option(options_df, target_strike, target_expiry_days=None):
-    """Find the closest option to target parameters"""
-    if options_df is None or options_df.empty:
-        return None
-    
-    # Find closest strike
-    strike_diff = abs(options_df['strike'] - target_strike)
-    closest_idx = strike_diff.idxmin()
-    
-    return options_df.loc[closest_idx]
-
-def generate_option_synthetic_data(spot_price, strike_price, time_to_expiry, risk_free_rate, 
-                                 volatility, option_type, quantity, num_days=252):
-    """Generate synthetic option price data"""
+def find_closest_option(options_df, target_strike=None, option_type='calls'):
+    """Find the closest to at-the-money option"""
     try:
-        # Generate underlying price path
-        dt = 1/252  # Daily time step
-        np.random.seed(42)
+        if options_df is None or options_df.empty:
+            return None
         
-        # Geometric Brownian Motion for underlying
-        returns = np.random.normal((risk_free_rate - 0.5 * volatility**2) * dt, 
-                                 volatility * np.sqrt(dt), num_days)
+        if target_strike is None:
+            # Find ATM option (closest to current price)
+            mid_prices = (options_df['bid'] + options_df['ask']) / 2
+            valid_options = options_df[mid_prices > 0]
+            if valid_options.empty:
+                return None
+            
+            # Find the option with strike closest to current underlying price
+            current_price = valid_options['lastPrice'].iloc[0] if 'lastPrice' in valid_options.columns else 100
+            closest_idx = (valid_options['strike'] - current_price).abs().idxmin()
+            return valid_options.loc[closest_idx]
+        else:
+            # Find option closest to target strike
+            closest_idx = (options_df['strike'] - target_strike).abs().idxmin()
+            return options_df.loc[closest_idx]
+    except Exception as e:
+        st.error(f"Error finding closest option: {str(e)}")
+        return None
+
+def generate_option_synthetic_data(S0, K, T, r, sigma, option_type, num_days=252):
+    """Generate synthetic option price data using Black-Scholes"""
+    try:
+        dates = pd.date_range(start=datetime.now() - timedelta(days=num_days), 
+                             end=datetime.now(), freq='D')
         
-        underlying_prices = [spot_price]
-        for ret in returns:
+        # Generate underlying price path using GBM
+        dt = 1/252
+        returns = np.random.normal((r - 0.5 * sigma**2) * dt, sigma * np.sqrt(dt), num_days)
+        
+        underlying_prices = [S0]
+        for ret in returns[1:]:
             underlying_prices.append(underlying_prices[-1] * np.exp(ret))
         
         # Calculate option prices for each underlying price
         option_prices = []
-        dates = pd.date_range(start=datetime.now() - timedelta(days=num_days), 
-                            periods=num_days+1, freq='D')
-        
         for i, S in enumerate(underlying_prices):
-            T_remaining = max(time_to_expiry - (i * dt), 0.01)  # Minimum 1 day to expiry
-            option_price = black_scholes_price(S, strike_price, T_remaining, 
-                                             risk_free_rate, volatility, option_type)
-            option_prices.append(option_price * quantity)
+            time_to_expiry = T - (i * dt)
+            if time_to_expiry > 0:
+                option_price = black_scholes_price(S, K, time_to_expiry, r, sigma, option_type)
+            else:
+                if option_type == 'call':
+                    option_price = max(S - K, 0)
+                else:
+                    option_price = max(K - S, 0)
+            option_prices.append(option_price)
         
         # Create DataFrame
         data = pd.DataFrame({
-            'Date': dates,
-            'Underlying_Price': underlying_prices,
-            'Option_Price': option_prices,
-            'Option_Value': [p * quantity for p in option_prices]
+            'Date': dates[:len(option_prices)],
+            'Underlying': underlying_prices[:len(option_prices)],
+            'Option': option_prices
         })
         data.set_index('Date', inplace=True)
         
@@ -187,6 +210,33 @@ def generate_option_synthetic_data(spot_price, strike_price, time_to_expiry, ris
     except Exception as e:
         st.error(f"Error generating synthetic option data: {str(e)}")
         return None
+
+def calculate_options_var_comprehensive(option_returns, confidence_level, method='historical'):
+    """Calculate VaR for options using various methods"""
+    try:
+        if option_returns.empty:
+            return 0
+        
+        if method == 'historical':
+            var_percentile = (1 - confidence_level) * 100
+            var = np.percentile(option_returns, var_percentile)
+        elif method == 'parametric':
+            mean = option_returns.mean()
+            std = option_returns.std()
+            var = mean - norm.ppf(confidence_level) * std
+        elif method == 'monte_carlo':
+            # Simple Monte Carlo simulation
+            simulated_returns = np.random.normal(option_returns.mean(), 
+                                               option_returns.std(), 10000)
+            var_percentile = (1 - confidence_level) * 100
+            var = np.percentile(simulated_returns, var_percentile)
+        else:
+            var = np.percentile(option_returns, (1 - confidence_level) * 100)
+        
+        return abs(var)
+    except Exception as e:
+        st.error(f"Error calculating options VaR: {str(e)}")
+        return 0
 
 def safe_dataframe_display(df, title="Data", key_suffix=""):
     """Safely display dataframe with proper type handling for Arrow compatibility"""
@@ -264,71 +314,8 @@ def initialize_session_state():
         st.session_state.model_changed = False
     if 'options_data' not in st.session_state:
         st.session_state.options_data = None
-    if 'option_greeks' not in st.session_state:
-        st.session_state.option_greeks = {}
-
-def calculate_options_var_comprehensive(option_data, method, confidence_level, time_horizon=1):
-    """Calculate comprehensive options VaR using different methods"""
-    try:
-        if option_data is None or option_data.empty:
-            return None
-        
-        # Calculate option returns
-        option_returns = option_data['Option_Value'].pct_change().dropna()
-        
-        if len(option_returns) < 10:
-            return None
-        
-        if method == "Historical Simulation":
-            # Historical VaR for options
-            var_percentile = (1 - confidence_level) * 100
-            var_value = np.percentile(option_returns, var_percentile)
-            var_dollar = abs(var_value * option_data['Option_Value'].iloc[-1])
-            
-        elif method == "Delta-Normal":
-            # Delta-normal approach
-            mean_return = option_returns.mean()
-            std_return = option_returns.std()
-            z_score = norm.ppf(1 - confidence_level)
-            var_value = mean_return + z_score * std_return
-            var_dollar = abs(var_value * option_data['Option_Value'].iloc[-1])
-            
-        elif method == "Monte Carlo":
-            # Monte Carlo simulation for options
-            num_sims = 10000
-            current_price = option_data['Option_Value'].iloc[-1]
-            returns_mean = option_returns.mean()
-            returns_std = option_returns.std()
-            
-            # Simulate future returns
-            simulated_returns = np.random.normal(returns_mean, returns_std, num_sims)
-            simulated_values = current_price * (1 + simulated_returns)
-            losses = current_price - simulated_values
-            
-            var_dollar = np.percentile(losses, confidence_level * 100)
-            
-        else:
-            # Default to historical simulation
-            var_percentile = (1 - confidence_level) * 100
-            var_value = np.percentile(option_returns, var_percentile)
-            var_dollar = abs(var_value * option_data['Option_Value'].iloc[-1])
-        
-        # Calculate Expected Shortfall
-        var_percentile = (1 - confidence_level) * 100
-        tail_returns = option_returns[option_returns <= np.percentile(option_returns, var_percentile)]
-        expected_shortfall = abs(tail_returns.mean() * option_data['Option_Value'].iloc[-1]) if len(tail_returns) > 0 else var_dollar
-        
-        return {
-            'var': var_dollar,
-            'expected_shortfall': expected_shortfall,
-            'method': method,
-            'current_value': option_data['Option_Value'].iloc[-1],
-            'returns_volatility': option_returns.std() * np.sqrt(252)
-        }
-        
-    except Exception as e:
-        st.error(f"Error calculating options VaR: {str(e)}")
-        return None
+    if 'selected_option' not in st.session_state:
+        st.session_state.selected_option = None
 
 def main():
     # Initialize session state
@@ -353,15 +340,7 @@ def main():
     with st.sidebar:
         st.header("⚙️ Configuration")
 
-        # Data Source Selection
-        st.subheader("📊 Data Source")
-        data_source = st.selectbox(
-            "Select Data Source",
-            ["Live Market Data", "Upload File", "Manual Entry", "Synthetic Data"],
-            key="data_source_select"
-        )
-
-        # Portfolio Type Selection
+        # Portfolio Type Selection (moved to top)
         st.subheader("💼 Portfolio Type")
         portfolio_type = st.selectbox(
             "Select Portfolio Type",
@@ -369,19 +348,43 @@ def main():
             key="portfolio_type_select"
         )
 
+        # Data Source Selection (conditional - not shown for Options Portfolio)
+        if portfolio_type != "Options Portfolio":
+            st.subheader("📊 Data Source")
+            data_source = st.selectbox(
+                "Select Data Source",
+                ["Live Market Data", "Upload File", "Manual Entry", "Synthetic Data"],
+                key="data_source_select"
+            )
+        else:
+            # For options portfolio, we'll handle data source internally
+            data_source = "Options Data"
+
         # VaR Model Selection
         st.subheader("🎯 VaR Model")
-        var_model = st.selectbox(
-            "Select VaR Model",
-            [
-                "Parametric (Delta-Normal)",
-                "Historical Simulation", 
-                "Monte Carlo",
-                "GARCH",
-                "Extreme Value Theory (EVT)"
-            ],
-            key="var_model_select"
-        )
+        if portfolio_type == "Options Portfolio":
+            var_model = st.selectbox(
+                "Select Options VaR Model",
+                [
+                    "Historical Simulation",
+                    "Parametric (Delta-Normal)", 
+                    "Monte Carlo",
+                    "Historic Simulation"
+                ],
+                key="var_model_select"
+            )
+        else:
+            var_model = st.selectbox(
+                "Select VaR Model",
+                [
+                    "Parametric (Delta-Normal)",
+                    "Historical Simulation", 
+                    "Monte Carlo",
+                    "GARCH",
+                    "Extreme Value Theory (EVT)"
+                ],
+                key="var_model_select"
+            )
 
         # Check if model changed
         if var_model != st.session_state.current_model:
@@ -411,8 +414,100 @@ def main():
             garch_p = st.slider("GARCH P", 1, 3, 1, key="garch_p_slider")
             garch_q = st.slider("GARCH Q", 1, 3, 1, key="garch_q_slider")
 
-        # Data Source Specific Configuration
-        if data_source == "Live Market Data":
+        # Portfolio Type Specific Configuration
+        if portfolio_type == "Options Portfolio":
+            st.markdown('<div class="options-config">', unsafe_allow_html=True)
+            st.subheader("📊 Options Configuration")
+            
+            # Options data source selection
+            options_data_source = st.selectbox(
+                "Options Data Source",
+                ["Live Market Data", "Manual Entry"],
+                key="options_data_source_select"
+            )
+            
+            if options_data_source == "Live Market Data":
+                st.write("**Live Market Options:**")
+                underlying = st.text_input("Underlying Symbol", "AAPL", key="options_underlying_input")
+                
+                # Fetch options data button
+                if st.button("🔄 Fetch Options Data", key="fetch_options_button"):
+                    with st.spinner("Fetching options data..."):
+                        options_chain, expirations = get_options_chain(underlying)
+                        if options_chain is not None:
+                            st.session_state.options_data = options_chain
+                            st.session_state.options_expirations = expirations
+                            st.success(f"✅ Fetched options data for {underlying}")
+                        else:
+                            st.error(f"❌ Could not fetch options data for {underlying}")
+                
+                # Options selection if data is available
+                if hasattr(st.session_state, 'options_data') and st.session_state.options_data is not None:
+                    option_type = st.selectbox("Option Type", ["Call", "Put"], key="live_option_type_select")
+                    
+                    # Get the appropriate options dataframe
+                    if option_type == "Call":
+                        options_df = st.session_state.options_data.calls
+                    else:
+                        options_df = st.session_state.options_data.puts
+                    
+                    if not options_df.empty:
+                        # Strike selection
+                        available_strikes = sorted(options_df['strike'].unique())
+                        default_strike_idx = len(available_strikes) // 2  # Middle strike as default
+                        
+                        selected_strike = st.selectbox(
+                            "Strike Price",
+                            available_strikes,
+                            index=default_strike_idx,
+                            key="live_strike_select"
+                        )
+                        
+                        # Find the selected option
+                        selected_option_data = options_df[options_df['strike'] == selected_strike].iloc[0]
+                        
+                        # Display option details
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write(f"**Strike:** ${selected_strike}")
+                            st.write(f"**Last Price:** ${selected_option_data.get('lastPrice', 0):.2f}")
+                        with col2:
+                            st.write(f"**Bid:** ${selected_option_data.get('bid', 0):.2f}")
+                            st.write(f"**Ask:** ${selected_option_data.get('ask', 0):.2f}")
+                        
+                        # Set parameters for calculations
+                        spot_price = selected_option_data.get('lastPrice', 150.0)
+                        strike_price = selected_strike
+                        # Estimate time to expiry (simplified)
+                        time_to_expiry = 0.25  # 3 months default
+                        risk_free_rate = 0.05
+                        volatility = selected_option_data.get('impliedVolatility', 0.25)
+                        quantity = st.number_input("Quantity", 1, 1000, 100, 1, key="live_quantity_input")
+                        
+                        symbols = [underlying]
+                        weights = [1.0]
+                    else:
+                        st.warning("No options data available for the selected type")
+                        # Fallback to manual entry
+                        options_data_source = "Manual Entry"
+            
+            if options_data_source == "Manual Entry":
+                st.write("**Manual Options Entry:**")
+                underlying = st.text_input("Underlying Symbol", "AAPL", key="manual_underlying_input")
+                spot_price = st.number_input("Current Spot Price ($)", 50.0, 1000.0, 150.0, 1.0, key="manual_spot_price_input")
+                strike_price = st.number_input("Strike Price ($)", 50.0, 1000.0, 155.0, 1.0, key="manual_strike_price_input")
+                time_to_expiry = st.number_input("Time to Expiry (years)", 0.01, 2.0, 0.25, 0.01, key="manual_time_expiry_input")
+                risk_free_rate = st.number_input("Risk-free Rate", 0.0, 0.1, 0.05, 0.001, key="manual_risk_free_input")
+                volatility = st.number_input("Volatility", 0.1, 1.0, 0.25, 0.01, key="manual_volatility_input")
+                option_type = st.selectbox("Option Type", ["Call", "Put"], key="manual_option_type_select")
+                quantity = st.number_input("Quantity", 1, 1000, 100, 1, key="manual_quantity_input")
+
+                symbols = [underlying]
+                weights = [1.0]
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        elif data_source == "Live Market Data":
             st.subheader("🔗 Market Data Configuration")
 
             if portfolio_type == "Single Asset":
@@ -451,159 +546,28 @@ def main():
                 symbols = [s.strip().upper() for s in symbols_input.split(",") if s.strip()]
                 weights = [1.0/len(symbols) for _ in symbols] if len(symbols) > 1 else [1.0]
 
-            elif portfolio_type == "Options Portfolio":
-                st.markdown('<div class="options-highlight">', unsafe_allow_html=True)
-                st.write("🎯 **Options Configuration**")
-                
-                # Options data source selection
-                options_data_source = st.radio(
-                    "Options Data Source",
-                    ["Manual Entry", "Live Market"],
-                    key="options_data_source"
-                )
-                
-                underlying = st.text_input("Underlying Symbol", "AAPL", key="options_underlying_input")
-                
-                if options_data_source == "Manual Entry":
-                    st.write("📝 **Manual Option Parameters**")
-                    spot_price = st.number_input("Current Spot Price ($)", 50.0, 1000.0, 150.0, 1.0, key="spot_price_input")
-                    strike_price = st.number_input("Strike Price ($)", 50.0, 1000.0, 155.0, 1.0, key="strike_price_input")
-                    time_to_expiry = st.number_input("Time to Expiry (years)", 0.01, 2.0, 0.25, 0.01, key="time_expiry_input")
-                    risk_free_rate = st.number_input("Risk-free Rate", 0.0, 0.1, 0.05, 0.001, key="risk_free_input")
-                    volatility = st.number_input("Volatility", 0.1, 1.0, 0.25, 0.01, key="volatility_input")
-                    option_type = st.selectbox("Option Type", ["Call", "Put"], key="option_type_select")
-                    quantity = st.number_input("Quantity", 1, 1000, 100, 1, key="quantity_input")
-                    
-                else:  # Live Market
-                    st.write("📡 **Live Market Options**")
-                    
-                    # Fetch current stock price
-                    try:
-                        ticker = yf.Ticker(underlying)
-                        current_price = ticker.history(period="1d")['Close'].iloc[-1]
-                        st.info(f"Current {underlying} price: ${current_price:.2f}")
-                        spot_price = current_price
-                    except:
-                        spot_price = 150.0
-                        st.warning(f"Could not fetch current price for {underlying}, using default: ${spot_price}")
-                    
-                    # Fetch options chain
-                    calls, puts, expiry_dates = get_options_chain(underlying)
-                    
-                    if calls is not None and puts is not None:
-                        st.success(f"✅ Found options data for {underlying}")
-                        
-                        # Option type selection
-                        option_type = st.selectbox("Option Type", ["Call", "Put"], key="live_option_type_select")
-                        
-                        # Expiry date selection
-                        if expiry_dates:
-                            selected_expiry = st.selectbox("Expiry Date", expiry_dates, key="expiry_select")
-                            
-                            # Calculate time to expiry
-                            expiry_date = datetime.strptime(selected_expiry, "%Y-%m-%d")
-                            time_to_expiry = (expiry_date - datetime.now()).days / 365.0
-                            time_to_expiry = max(time_to_expiry, 0.01)  # Minimum 1 day
-                        else:
-                            time_to_expiry = 0.25
-                            st.warning("Using default 3-month expiry")
-                        
-                        # Strike price selection
-                        options_df = calls if option_type.lower() == 'call' else puts
-                        
-                        # Find ATM option (closest to current price)
-                        atm_option = find_closest_option(options_df, spot_price)
-                        default_strike = atm_option['strike'] if atm_option is not None else spot_price
-                        
-                        # Strike selection
-                        available_strikes = sorted(options_df['strike'].unique())
-                        if available_strikes:
-                            strike_index = min(range(len(available_strikes)), 
-                                             key=lambda i: abs(available_strikes[i] - default_strike))
-                            strike_price = st.selectbox(
-                                "Strike Price", 
-                                available_strikes, 
-                                index=strike_index,
-                                key="live_strike_select"
-                            )
-                        else:
-                            strike_price = st.number_input("Strike Price ($)", 50.0, 1000.0, default_strike, 1.0, key="manual_strike_input")
-                        
-                        # Other parameters
-                        risk_free_rate = st.number_input("Risk-free Rate", 0.0, 0.1, 0.05, 0.001, key="live_risk_free_input")
-                        volatility = st.number_input("Implied Volatility", 0.1, 1.0, 0.25, 0.01, key="live_volatility_input")
-                        quantity = st.number_input("Quantity", 1, 1000, 100, 1, key="live_quantity_input")
-                        
-                    else:
-                        st.warning(f"Could not fetch options data for {underlying}. Using manual entry.")
-                        spot_price = st.number_input("Current Spot Price ($)", 50.0, 1000.0, 150.0, 1.0, key="fallback_spot_price")
-                        strike_price = st.number_input("Strike Price ($)", 50.0, 1000.0, 155.0, 1.0, key="fallback_strike_price")
-                        time_to_expiry = st.number_input("Time to Expiry (years)", 0.01, 2.0, 0.25, 0.01, key="fallback_time_expiry")
-                        risk_free_rate = st.number_input("Risk-free Rate", 0.0, 0.1, 0.05, 0.001, key="fallback_risk_free")
-                        volatility = st.number_input("Volatility", 0.1, 1.0, 0.25, 0.01, key="fallback_volatility")
-                        option_type = st.selectbox("Option Type", ["Call", "Put"], key="fallback_option_type")
-                        quantity = st.number_input("Quantity", 1, 1000, 100, 1, key="fallback_quantity")
-
-                st.markdown('</div>', unsafe_allow_html=True)
-                
-                symbols = [underlying]
-                weights = [1.0]
-
-        elif data_source == "Manual Entry":
-            st.subheader("✏️ Manual Data Entry")
-            
-            if portfolio_type == "Options Portfolio":
-                st.write("📝 **Manual Options Entry**")
-                underlying = st.text_input("Underlying Symbol", "AAPL", key="manual_options_underlying")
-                spot_price = st.number_input("Current Spot Price ($)", 50.0, 1000.0, 150.0, 1.0, key="manual_spot_price")
-                strike_price = st.number_input("Strike Price ($)", 50.0, 1000.0, 155.0, 1.0, key="manual_strike_price")
-                time_to_expiry = st.number_input("Time to Expiry (years)", 0.01, 2.0, 0.25, 0.01, key="manual_time_expiry")
-                risk_free_rate = st.number_input("Risk-free Rate", 0.0, 0.1, 0.05, 0.001, key="manual_risk_free")
-                volatility = st.number_input("Volatility", 0.1, 1.0, 0.25, 0.01, key="manual_volatility")
-                option_type = st.selectbox("Option Type", ["Call", "Put"], key="manual_option_type")
-                quantity = st.number_input("Quantity", 1, 1000, 100, 1, key="manual_quantity")
-                symbols = [underlying]
-                weights = [1.0]
-            else:
-                st.info("Manual entry for non-options portfolios - upload CSV file instead")
-                symbols = ["MANUAL"]
-                weights = [1.0]
-
         elif data_source == "Synthetic Data":
             st.subheader("🎲 Synthetic Data Parameters")
 
-            if portfolio_type == "Options Portfolio":
-                st.write("🎯 **Synthetic Options Data**")
-                underlying = st.text_input("Underlying Symbol", "SYNTHETIC_OPTION", key="synthetic_options_underlying")
-                spot_price = st.number_input("Initial Spot Price ($)", 50.0, 1000.0, 100.0, 1.0, key="synthetic_spot_price")
-                strike_price = st.number_input("Strike Price ($)", 50.0, 1000.0, 105.0, 1.0, key="synthetic_strike_price")
-                time_to_expiry = st.number_input("Time to Expiry (years)", 0.01, 2.0, 0.25, 0.01, key="synthetic_time_expiry")
-                risk_free_rate = st.number_input("Risk-free Rate", 0.0, 0.1, 0.05, 0.001, key="synthetic_risk_free")
-                volatility = st.number_input("Volatility", 0.1, 1.0, 0.20, 0.01, key="synthetic_volatility")
-                option_type = st.selectbox("Option Type", ["Call", "Put"], key="synthetic_option_type")
-                quantity = st.number_input("Quantity", 1, 1000, 100, 1, key="synthetic_quantity")
-                symbols = [underlying]
-                weights = [1.0]
+            # Expandable section for custom parameters
+            use_custom = st.checkbox("Customize Parameters", key="custom_synthetic_checkbox")
+
+            if use_custom:
+                num_days = st.slider("Number of Days", 100, 2000, 500, key="synthetic_days_slider")
+                initial_price = st.number_input("Initial Price ($)", 10.0, 1000.0, 100.0, key="synthetic_price_input")
+                annual_return = st.slider("Annual Return", -0.5, 0.5, 0.08, 0.01, key="synthetic_return_slider")
+                annual_volatility = st.slider("Annual Volatility", 0.05, 1.0, 0.20, 0.01, key="synthetic_vol_slider")
+                random_seed = st.number_input("Random Seed", 1, 1000, 42, key="synthetic_seed_input")
             else:
-                # Expandable section for custom parameters
-                use_custom = st.checkbox("Customize Parameters", key="custom_synthetic_checkbox")
+                # Default parameters for good representative data
+                num_days = 500
+                initial_price = 100.0
+                annual_return = 0.08
+                annual_volatility = 0.20
+                random_seed = 42
 
-                if use_custom:
-                    num_days = st.slider("Number of Days", 100, 2000, 500, key="synthetic_days_slider")
-                    initial_price = st.number_input("Initial Price ($)", 10.0, 1000.0, 100.0, key="synthetic_price_input")
-                    annual_return = st.slider("Annual Return", -0.5, 0.5, 0.08, 0.01, key="synthetic_return_slider")
-                    annual_volatility = st.slider("Annual Volatility", 0.05, 1.0, 0.20, 0.01, key="synthetic_vol_slider")
-                    random_seed = st.number_input("Random Seed", 1, 1000, 42, key="synthetic_seed_input")
-                else:
-                    # Default parameters for good representative data
-                    num_days = 500
-                    initial_price = 100.0
-                    annual_return = 0.08
-                    annual_volatility = 0.20
-                    random_seed = 42
-
-                symbols = ["Synthetic_Asset"]
-                weights = [1.0]
+            symbols = ["Synthetic_Asset"]
+            weights = [1.0]
 
         # Load Data Button
         if st.button("🔄 Load Data", type="primary", key="load_data_button"):
@@ -611,30 +575,38 @@ def main():
                 try:
                     if portfolio_type == "Options Portfolio":
                         # Generate or load options data
-                        if data_source in ["Live Market Data", "Manual Entry", "Synthetic Data"]:
+                        if options_data_source == "Manual Entry" or not hasattr(st.session_state, 'options_data'):
                             # Generate synthetic options data
-                            options_data = generate_option_synthetic_data(
-                                spot_price, strike_price, time_to_expiry, risk_free_rate,
-                                volatility, option_type.lower(), quantity
+                            data = generate_option_synthetic_data(
+                                spot_price, strike_price, time_to_expiry, 
+                                risk_free_rate, volatility, option_type.lower()
                             )
-                            
-                            if options_data is not None:
-                                st.session_state.current_data = options_data[['Option_Value']]
-                                st.session_state.current_returns = options_data['Option_Value'].pct_change().dropna()
-                                st.session_state.options_data = options_data
-                                st.session_state.data_loaded = True
-                                st.session_state.symbols = [f"{underlying}_{option_type}_{strike_price}"]
-                                st.session_state.weights = weights
-                                
-                                # Calculate and store option Greeks
-                                greeks = calculate_option_greeks(spot_price, strike_price, time_to_expiry, 
-                                                               risk_free_rate, volatility, option_type.lower())
-                                st.session_state.option_greeks = greeks
-                                
-                                st.success(f"✅ Successfully loaded options data for {underlying} {option_type}")
-                            else:
-                                st.error("❌ Failed to generate options data")
-                    
+                        else:
+                            # Use live options data (simplified for now)
+                            data = generate_option_synthetic_data(
+                                spot_price, strike_price, time_to_expiry, 
+                                risk_free_rate, volatility, option_type.lower()
+                            )
+                        
+                        if data is not None:
+                            st.session_state.current_data = data
+                            st.session_state.current_returns = data['Option'].pct_change().dropna()
+                            st.session_state.data_loaded = True
+                            st.session_state.symbols = [f"{underlying}_{option_type}_{strike_price}"]
+                            st.session_state.weights = [1.0]
+                            st.session_state.option_params = {
+                                'spot_price': spot_price,
+                                'strike_price': strike_price,
+                                'time_to_expiry': time_to_expiry,
+                                'risk_free_rate': risk_free_rate,
+                                'volatility': volatility,
+                                'option_type': option_type.lower(),
+                                'quantity': quantity
+                            }
+                            st.success(f"✅ Successfully loaded options data for {underlying}")
+                        else:
+                            st.error("❌ Failed to generate options data")
+
                     elif data_source == "Live Market Data":
                         # Calculate required data range for backtesting
                         backtesting_window = st.session_state.get('backtesting_window', 252)
@@ -656,20 +628,19 @@ def main():
                             st.error("❌ Failed to load market data")
 
                     elif data_source == "Synthetic Data":
-                        if portfolio_type != "Options Portfolio":
-                            data = instances['data_ingestion'].generate_synthetic_data(
-                                num_days, initial_price, annual_return, annual_volatility, random_seed
-                            )
+                        data = instances['data_ingestion'].generate_synthetic_data(
+                            num_days, initial_price, annual_return, annual_volatility, random_seed
+                        )
 
-                            if data is not None:
-                                st.session_state.current_data = data
-                                st.session_state.current_returns = instances['data_ingestion'].returns
-                                st.session_state.data_loaded = True
-                                st.session_state.symbols = symbols
-                                st.session_state.weights = weights
-                                st.success("✅ Successfully generated synthetic data")
-                            else:
-                                st.error("❌ Failed to generate synthetic data")
+                        if data is not None:
+                            st.session_state.current_data = data
+                            st.session_state.current_returns = instances['data_ingestion'].returns
+                            st.session_state.data_loaded = True
+                            st.session_state.symbols = symbols
+                            st.session_state.weights = weights
+                            st.success("✅ Successfully generated synthetic data")
+                        else:
+                            st.error("❌ Failed to generate synthetic data")
 
                 except Exception as e:
                     st.error(f"❌ Error loading data: {str(e)}")
@@ -683,21 +654,17 @@ def main():
             else:
                 var_portfolio_returns = st.session_state.current_returns.dot(st.session_state.weights)
 
-            # Calculate VaR based on portfolio type and selected model
-            if portfolio_type == "Options Portfolio" and st.session_state.options_data is not None:
-                # Use options-specific VaR calculation
-                options_var_result = calculate_options_var_comprehensive(
-                    st.session_state.options_data, var_model, confidence_level, time_horizon
+            # Calculate VaR based on selected model and portfolio type
+            if portfolio_type == "Options Portfolio":
+                # Options-specific VaR calculation
+                var_result = calculate_options_var_comprehensive(
+                    var_portfolio_returns, confidence_level, var_model.lower().replace(' ', '_')
                 )
-                
-                if options_var_result:
-                    var_result = options_var_result['var']
-                    expected_shortfall = options_var_result['expected_shortfall']
-                else:
-                    var_result = 0
-                    expected_shortfall = 0
+                expected_shortfall = calculate_options_var_comprehensive(
+                    var_portfolio_returns[var_portfolio_returns <= -var_result], 0.5, 'historical'
+                )
             else:
-                # Standard VaR calculation for other portfolio types
+                # Standard VaR calculation
                 if var_model == "Parametric (Delta-Normal)":
                     var_result = instances['var_engines'].calculate_parametric_var(
                         var_portfolio_returns, confidence_level, time_horizon
@@ -740,7 +707,7 @@ def main():
             var_result = 0
             expected_shortfall = 0
 
-        # Create tabs - remove Options Analysis tab and modify dashboard for options
+        # Create tabs - conditional based on portfolio type
         if portfolio_type == "Options Portfolio":
             tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
                 "📊 Options Dashboard", "📈 VaR Calculator", "📋 Data Overview", "🔄 Rolling Analysis", 
@@ -752,114 +719,91 @@ def main():
                 "🧪 Backtesting", "⚡ Stress Testing", "📊 Options Analysis", "❓ Help"
             ])
 
-        with tab1:  # Dashboard (Options Dashboard when options portfolio selected)
+        with tab1:  # Dashboard (Options Dashboard for options portfolio)
             if portfolio_type == "Options Portfolio":
                 st.header("📊 Options Risk Analytics Dashboard")
                 
                 # Options-specific metrics
-                col1, col2, col3, col4 = st.columns(4)
-
-                with col1:
-                    st.metric(
-                        label="Options VaR (95%)",
-                        value=f"${var_result:,.2f}",
-                        delta=f"{var_model}"
+                if hasattr(st.session_state, 'option_params'):
+                    params = st.session_state.option_params
+                    
+                    # Calculate current option price and Greeks
+                    current_option_price = black_scholes_price(
+                        params['spot_price'], params['strike_price'], 
+                        params['time_to_expiry'], params['risk_free_rate'], 
+                        params['volatility'], params['option_type']
                     )
-
-                with col2:
-                    st.metric(
-                        label="Expected Shortfall",
-                        value=f"${expected_shortfall:,.2f}",
-                        delta=f"{confidence_level*100:.0f}% confidence"
+                    
+                    greeks = calculate_option_greeks(
+                        params['spot_price'], params['strike_price'], 
+                        params['time_to_expiry'], params['risk_free_rate'], 
+                        params['volatility'], params['option_type']
                     )
+                    
+                    # Key metrics in columns
+                    col1, col2, col3, col4 = st.columns(4)
 
-                with col3:
-                    if st.session_state.options_data is not None:
-                        current_option_value = st.session_state.options_data['Option_Value'].iloc[-1]
-                        var_percentage = (var_result / current_option_value) * 100 if current_option_value > 0 else 0
+                    with col1:
                         st.metric(
-                            label="VaR as % of Position",
+                            label="Options VaR (95%)",
+                            value=f"${var_result:,.2f}",
+                            delta=f"{var_model}"
+                        )
+
+                    with col2:
+                        st.metric(
+                            label="Current Option Price",
+                            value=f"${current_option_price:.2f}",
+                            delta=f"{params['option_type'].title()} Option"
+                        )
+
+                    with col3:
+                        st.metric(
+                            label="Delta",
+                            value=f"{greeks['delta']:.4f}",
+                            delta="Price Sensitivity"
+                        )
+
+                    with col4:
+                        st.metric(
+                            label="Theta (Daily)",
+                            value=f"${greeks['theta']:.2f}",
+                            delta="Time Decay"
+                        )
+                    
+                    # Additional Greeks
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        st.metric(
+                            label="Gamma",
+                            value=f"{greeks['gamma']:.6f}",
+                            delta="Delta Sensitivity"
+                        )
+                    
+                    with col2:
+                        st.metric(
+                            label="Vega",
+                            value=f"${greeks['vega']:.2f}",
+                            delta="Vol Sensitivity"
+                        )
+                    
+                    with col3:
+                        portfolio_value = current_option_price * params['quantity']
+                        st.metric(
+                            label="Portfolio Value",
+                            value=f"${portfolio_value:,.2f}",
+                            delta=f"{params['quantity']} contracts"
+                        )
+                    
+                    with col4:
+                        var_percentage = (var_result / portfolio_value) * 100 if portfolio_value > 0 else 0
+                        st.metric(
+                            label="VaR as % of Portfolio",
                             value=f"{var_percentage:.2f}%",
                             delta=f"{time_horizon} day horizon"
                         )
-
-                with col4:
-                    if st.session_state.option_greeks:
-                        delta = st.session_state.option_greeks.get('delta', 0)
-                        st.metric(
-                            label="Option Delta",
-                            value=f"{delta:.4f}",
-                            delta="Price sensitivity"
-                        )
-
-                # Options Greeks display
-                if st.session_state.option_greeks:
-                    st.subheader("🔢 Option Greeks")
-                    greeks_col1, greeks_col2, greeks_col3, greeks_col4 = st.columns(4)
-                    
-                    with greeks_col1:
-                        st.metric("Delta", f"{st.session_state.option_greeks.get('delta', 0):.4f}")
-                    with greeks_col2:
-                        st.metric("Gamma", f"{st.session_state.option_greeks.get('gamma', 0):.6f}")
-                    with greeks_col3:
-                        st.metric("Theta", f"${st.session_state.option_greeks.get('theta', 0):.2f}")
-                    with greeks_col4:
-                        st.metric("Vega", f"${st.session_state.option_greeks.get('vega', 0):.2f}")
-
-                # Options-specific charts
-                if st.session_state.options_data is not None:
-                    col1, col2 = st.columns(2)
-
-                    with col1:
-                        st.subheader("Option Value Over Time")
-                        fig_option_value = go.Figure()
-                        fig_option_value.add_trace(go.Scatter(
-                            x=st.session_state.options_data.index,
-                            y=st.session_state.options_data['Option_Value'],
-                            mode='lines',
-                            name='Option Value',
-                            line=dict(color='#00ff88', width=2)
-                        ))
-                        fig_option_value.update_layout(
-                            title="Option Position Value",
-                            xaxis_title="Date",
-                            yaxis_title="Option Value ($)",
-                            template="plotly_dark",
-                            height=400
-                        )
-                        st.plotly_chart(fig_option_value, use_container_width=True, key="options_value_chart")
-
-                    with col2:
-                        st.subheader("Underlying vs Option Price")
-                        fig_correlation = go.Figure()
-                        fig_correlation.add_trace(go.Scatter(
-                            x=st.session_state.options_data['Underlying_Price'],
-                            y=st.session_state.options_data['Option_Price'],
-                            mode='markers',
-                            name='Price Relationship',
-                            marker=dict(color='#4a90e2', size=6)
-                        ))
-                        fig_correlation.update_layout(
-                            title="Underlying vs Option Price",
-                            xaxis_title="Underlying Price ($)",
-                            yaxis_title="Option Price ($)",
-                            template="plotly_dark",
-                            height=400
-                        )
-                        st.plotly_chart(fig_correlation, use_container_width=True, key="options_correlation_chart")
-
-                # Options returns distribution
-                if st.session_state.options_data is not None:
-                    st.subheader("Option Returns Distribution")
-                    option_returns = st.session_state.options_data['Option_Value'].pct_change().dropna()
-                    if not option_returns.empty:
-                        fig_dist = instances['visualization'].plot_var_distribution(
-                            option_returns, confidence_level, var_result / st.session_state.options_data['Option_Value'].iloc[-1]
-                        )
-                        st.plotly_chart(fig_dist, use_container_width=True, key="options_distribution_chart")
-
             else:
-                # Standard dashboard for non-options portfolios
                 st.header("📊 Risk Analytics Dashboard")
 
                 # Key metrics in columns
@@ -891,42 +835,61 @@ def main():
                 with col4:
                     if len(st.session_state.current_returns) > 0:
                         current_vol = st.session_state.current_returns.std() * np.sqrt(252) * 100
-                        if hasattr(current_vol, 'iloc'):
-                            vol_value = current_vol.iloc[0] if len(current_vol) > 0 else current_vol
-                        else:
-                            vol_value = current_vol
                         st.metric(
                             label="Annualized Volatility",
-                            value=f"{vol_value:.2f}%",
+                            value=f"{current_vol:.2f}%",
                             delta="Historical"
                         )
 
-                # Time range selector for dashboard charts
-                st.subheader("📅 Chart Time Range")
-                col1, col2 = st.columns(2)
-                with col1:
-                    chart_start = st.date_input("Chart Start Date", date_start, key="dashboard_chart_start")
-                with col2:
-                    chart_end = st.date_input("Chart End Date", date_end, key="dashboard_chart_end")
+            # Time range selector for dashboard charts
+            st.subheader("📅 Chart Time Range")
+            col1, col2 = st.columns(2)
+            with col1:
+                chart_start = st.date_input("Chart Start Date", date_start, key="dashboard_chart_start")
+            with col2:
+                chart_end = st.date_input("Chart End Date", date_end, key="dashboard_chart_end")
 
-                # Filter data for selected time range
-                mask = (st.session_state.current_data.index >= pd.to_datetime(chart_start)) & \
-                       (st.session_state.current_data.index <= pd.to_datetime(chart_end))
-                filtered_data = st.session_state.current_data.loc[mask]
+            # Filter data for selected time range
+            mask = (st.session_state.current_data.index >= pd.to_datetime(chart_start)) & \
+                   (st.session_state.current_data.index <= pd.to_datetime(chart_end))
+            filtered_data = st.session_state.current_data.loc[mask]
+            
+            if portfolio_type == "Options Portfolio":
+                filtered_returns = filtered_data['Option'].pct_change().dropna()
+            else:
                 filtered_returns = filtered_data.pct_change().dropna()
-
                 if len(filtered_returns.shape) > 1:
-                    filtered_portfolio_returns = filtered_returns.dot(st.session_state.weights)
+                    filtered_returns = filtered_returns.dot(st.session_state.weights)
+
+            # Charts
+            col1, col2 = st.columns(2)
+
+            with col1:
+                if portfolio_type == "Options Portfolio":
+                    st.subheader("Option Value Performance")
+                    if not filtered_data.empty:
+                        fig_perf = go.Figure()
+                        fig_perf.add_trace(go.Scatter(
+                            x=filtered_data.index,
+                            y=filtered_data['Option'].values,
+                            mode='lines',
+                            name='Option Value',
+                            line=dict(color='#00ff88', width=2)
+                        ))
+
+                        fig_perf.update_layout(
+                            title="Option Value Over Time",
+                            xaxis_title="Date",
+                            yaxis_title="Option Value ($)",
+                            template="plotly_dark",
+                            height=400
+                        )
+
+                        st.plotly_chart(fig_perf, use_container_width=True, key="dashboard_option_performance_chart")
                 else:
-                    filtered_portfolio_returns = filtered_returns
-
-                # Charts
-                col1, col2 = st.columns(2)
-
-                with col1:
                     st.subheader("Portfolio Performance")
-                    if not filtered_portfolio_returns.empty:
-                        cumulative_returns = (1 + filtered_portfolio_returns).cumprod()
+                    if not filtered_returns.empty:
+                        cumulative_returns = (1 + filtered_returns).cumprod()
 
                         fig_perf = go.Figure()
                         fig_perf.add_trace(go.Scatter(
@@ -947,15 +910,32 @@ def main():
 
                         st.plotly_chart(fig_perf, use_container_width=True, key="dashboard_performance_chart")
 
-                with col2:
-                    st.subheader("Returns Distribution")
-                    if not filtered_portfolio_returns.empty:
-                        fig_dist = instances['visualization'].plot_var_distribution(
-                            filtered_portfolio_returns, confidence_level, var_result
-                        )
-                        st.plotly_chart(fig_dist, use_container_width=True, key="dashboard_distribution_chart")
+            with col2:
+                st.subheader("Returns Distribution")
+                if not filtered_returns.empty:
+                    fig_dist = instances['visualization'].plot_var_distribution(
+                        filtered_returns, confidence_level, var_result
+                    )
+                    st.plotly_chart(fig_dist, use_container_width=True, key="dashboard_distribution_chart")
 
-                # Portfolio Statistics
+            # Portfolio Statistics
+            if portfolio_type == "Options Portfolio":
+                st.subheader("Options Statistics")
+                if hasattr(st.session_state, 'option_params'):
+                    params = st.session_state.option_params
+                    option_stats = {
+                        'Underlying Symbol': params.get('underlying', 'N/A'),
+                        'Option Type': params['option_type'].title(),
+                        'Strike Price': f"${params['strike_price']:.2f}",
+                        'Current Spot': f"${params['spot_price']:.2f}",
+                        'Time to Expiry': f"{params['time_to_expiry']:.2f} years",
+                        'Implied Volatility': f"{params['volatility']*100:.1f}%",
+                        'Risk-free Rate': f"{params['risk_free_rate']*100:.1f}%",
+                        'Quantity': f"{params['quantity']} contracts"
+                    }
+                    stats_df = create_metrics_dataframe(option_stats, "Options Statistics")
+                    safe_dataframe_display(stats_df, "Options Statistics", "dashboard")
+            else:
                 st.subheader("Portfolio Statistics")
                 if not var_portfolio_returns.empty:
                     portfolio_stats = instances['utils'].calculate_portfolio_statistics(var_portfolio_returns)
@@ -977,12 +957,13 @@ def main():
             var_mask = (st.session_state.current_data.index >= pd.to_datetime(var_chart_start)) & \
                        (st.session_state.current_data.index <= pd.to_datetime(var_chart_end))
             var_filtered_data = st.session_state.current_data.loc[var_mask]
-            var_filtered_returns = var_filtered_data.pct_change().dropna()
-
-            if len(var_filtered_returns.shape) > 1:
-                var_filtered_portfolio_returns = var_filtered_returns.dot(st.session_state.weights)
+            
+            if portfolio_type == "Options Portfolio":
+                var_filtered_returns = var_filtered_data['Option'].pct_change().dropna()
             else:
-                var_filtered_portfolio_returns = var_filtered_returns
+                var_filtered_returns = var_filtered_data.pct_change().dropna()
+                if len(var_filtered_returns.shape) > 1:
+                    var_filtered_returns = var_filtered_returns.dot(st.session_state.weights)
 
             # VaR Results
             col1, col2 = st.columns(2)
@@ -997,11 +978,6 @@ def main():
                     'Time Horizon': f"{time_horizon} day(s)"
                 }
 
-                if portfolio_type == "Options Portfolio":
-                    var_metrics['Portfolio Type'] = "Options Portfolio"
-                    if st.session_state.options_data is not None:
-                        var_metrics['Current Position Value'] = f"${st.session_state.options_data['Option_Value'].iloc[-1]:,.2f}"
-
                 var_df = create_metrics_dataframe(var_metrics, "VaR Results")
                 safe_dataframe_display(var_df, "VaR Results", "var_calculator")
 
@@ -1011,24 +987,25 @@ def main():
                 comparison_results = {}
 
                 try:
-                    if portfolio_type == "Options Portfolio" and st.session_state.options_data is not None:
-                        # Options-specific model comparison
-                        for method in ["Historical Simulation", "Delta-Normal", "Monte Carlo"]:
-                            options_result = calculate_options_var_comprehensive(
-                                st.session_state.options_data, method, confidence_level, time_horizon
-                            )
-                            if options_result:
-                                comparison_results[method] = options_result['var']
+                    if portfolio_type == "Options Portfolio":
+                        comparison_results['Historical'] = calculate_options_var_comprehensive(
+                            var_filtered_returns, confidence_level, 'historical'
+                        )
+                        comparison_results['Parametric'] = calculate_options_var_comprehensive(
+                            var_filtered_returns, confidence_level, 'parametric'
+                        )
+                        comparison_results['Monte Carlo'] = calculate_options_var_comprehensive(
+                            var_filtered_returns, confidence_level, 'monte_carlo'
+                        )
                     else:
-                        # Standard model comparison
                         comparison_results['Parametric'] = instances['var_engines'].calculate_parametric_var(
-                            var_filtered_portfolio_returns, confidence_level, time_horizon
+                            var_filtered_returns, confidence_level, time_horizon
                         )
                         comparison_results['Historical'] = instances['var_engines'].calculate_historical_var(
-                            var_filtered_portfolio_returns, confidence_level, time_horizon
+                            var_filtered_returns, confidence_level, time_horizon
                         )
                         comparison_results['Monte Carlo'] = instances['var_engines'].calculate_monte_carlo_var(
-                            var_filtered_portfolio_returns, confidence_level, time_horizon, 5000
+                            var_filtered_returns, confidence_level, time_horizon, 5000
                         )
 
                     comparison_df = create_metrics_dataframe(comparison_results, "Model Comparison")
@@ -1039,63 +1016,30 @@ def main():
 
             # VaR Distribution Plot
             st.subheader("Returns Distribution with VaR Threshold")
-            if not var_filtered_portfolio_returns.empty:
+            if not var_filtered_returns.empty:
                 fig_var_dist = instances['visualization'].plot_var_distribution(
-                    var_filtered_portfolio_returns, confidence_level, var_result
+                    var_filtered_returns, confidence_level, var_result
                 )
                 st.plotly_chart(fig_var_dist, use_container_width=True, key="var_calculator_distribution")
-
-            # Options-specific VaR analysis
-            if portfolio_type == "Options Portfolio":
-                st.subheader("🎯 Options VaR Analysis")
-                
-                # Historic simulation option for Options VaR
-                options_var_method = st.selectbox(
-                    "Select Options VaR Method",
-                    ["Historical Simulation", "Delta-Normal", "Monte Carlo", "Historic Simulation"],
-                    key="options_var_method_select"
-                )
-                
-                if st.button("🔄 Calculate Advanced Options VaR", key="advanced_options_var_button"):
-                    with st.spinner("Calculating advanced options VaR..."):
-                        advanced_result = calculate_options_var_comprehensive(
-                            st.session_state.options_data, options_var_method, confidence_level, time_horizon
-                        )
-                        
-                        if advanced_result:
-                            advanced_metrics = {
-                                'Method': options_var_method,
-                                'Options VaR': f"${advanced_result['var']:,.2f}",
-                                'Expected Shortfall': f"${advanced_result['expected_shortfall']:,.2f}",
-                                'Current Position Value': f"${advanced_result['current_value']:,.2f}",
-                                'Annualized Volatility': f"{advanced_result['returns_volatility']*100:.2f}%"
-                            }
-                            advanced_df = create_metrics_dataframe(advanced_metrics, "Advanced Options VaR")
-                            safe_dataframe_display(advanced_df, "Advanced Options VaR", "advanced_options_var")
 
         with tab3:  # Data Overview
             st.header("📋 Data Overview")
 
             # Data Summary
             st.subheader("📊 Data Summary")
-            if portfolio_type == "Options Portfolio" and st.session_state.options_data is not None:
-                # Options-specific data summary
-                options_summary = {
-                    'Portfolio Type': 'Options Portfolio',
-                    'Data Points': len(st.session_state.options_data),
-                    'Date Range': f"{st.session_state.options_data.index[0].strftime('%Y-%m-%d')} to {st.session_state.options_data.index[-1].strftime('%Y-%m-%d')}",
-                    'Current Option Value': f"${st.session_state.options_data['Option_Value'].iloc[-1]:,.2f}",
-                    'Underlying Asset': st.session_state.symbols[0] if st.session_state.symbols else 'N/A'
-                }
-                summary_df = create_metrics_dataframe(options_summary, "Options Data Summary")
-                safe_dataframe_display(summary_df, "Options Data Summary", "options_data_overview")
-                
-                # Display options data
-                st.subheader("📈 Options Data")
-                safe_dataframe_display(st.session_state.options_data.tail(20), "Recent Options Data", "options_price_data")
-                
+            if portfolio_type == "Options Portfolio":
+                if hasattr(st.session_state, 'option_params'):
+                    params = st.session_state.option_params
+                    data_summary = {
+                        'Data Type': 'Options Data',
+                        'Underlying': params.get('underlying', 'N/A'),
+                        'Option Type': params['option_type'].title(),
+                        'Data Points': len(st.session_state.current_data),
+                        'Date Range': f"{st.session_state.current_data.index[0].strftime('%Y-%m-%d')} to {st.session_state.current_data.index[-1].strftime('%Y-%m-%d')}"
+                    }
+                    summary_df = create_metrics_dataframe(data_summary, "Options Data Summary")
+                    safe_dataframe_display(summary_df, "Options Data Summary", "data_overview")
             else:
-                # Standard data summary
                 data_summary = instances['data_ingestion'].get_data_summary()
                 if data_summary:
                     summary_metrics = {
@@ -1107,68 +1051,49 @@ def main():
                     summary_df = create_metrics_dataframe(summary_metrics, "Data Summary")
                     safe_dataframe_display(summary_df, "Data Summary", "data_overview")
 
-                # Raw Data Display
+            # Raw Data Display
+            if portfolio_type == "Options Portfolio":
+                st.subheader("📈 Options Data")
+            else:
                 st.subheader("📈 Price Data")
-                if st.session_state.current_data is not None:
-                    # Time range selector for data display
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        data_display_start = st.date_input("Data Display Start", date_start, key="data_display_start")
-                    with col2:
-                        data_display_end = st.date_input("Data Display End", date_end, key="data_display_end")
+                
+            if st.session_state.current_data is not None:
+                # Time range selector for data display
+                col1, col2 = st.columns(2)
+                with col1:
+                    data_display_start = st.date_input("Data Display Start", date_start, key="data_display_start")
+                with col2:
+                    data_display_end = st.date_input("Data Display End", date_end, key="data_display_end")
 
-                    # Filter data for display
-                    display_mask = (st.session_state.current_data.index >= pd.to_datetime(data_display_start)) & \
-                                  (st.session_state.current_data.index <= pd.to_datetime(data_display_end))
-                    display_data = st.session_state.current_data.loc[display_mask]
+                # Filter data for display
+                display_mask = (st.session_state.current_data.index >= pd.to_datetime(data_display_start)) & \
+                              (st.session_state.current_data.index <= pd.to_datetime(data_display_end))
+                display_data = st.session_state.current_data.loc[display_mask]
 
-                    safe_dataframe_display(display_data.tail(20), "Recent Price Data", "price_data")
+                safe_dataframe_display(display_data.tail(20), "Recent Data", "price_data")
 
             # Returns Data
             st.subheader("📊 Returns Data")
             if st.session_state.current_returns is not None:
-                if portfolio_type != "Options Portfolio":
-                    display_returns_mask = (st.session_state.current_returns.index >= pd.to_datetime(data_display_start)) & \
-                                          (st.session_state.current_returns.index <= pd.to_datetime(data_display_end))
-                    display_returns = st.session_state.current_returns.loc[display_returns_mask]
-                else:
-                    display_returns = st.session_state.current_returns
+                display_returns_mask = (st.session_state.current_returns.index >= pd.to_datetime(data_display_start)) & \
+                                      (st.session_state.current_returns.index <= pd.to_datetime(data_display_end))
+                display_returns = st.session_state.current_returns.loc[display_returns_mask]
 
                 safe_dataframe_display(display_returns.tail(20), "Recent Returns Data", "returns_data")
 
-            # Portfolio Weights
+            # Portfolio Composition
             if hasattr(st.session_state, 'weights') and hasattr(st.session_state, 'symbols'):
-                st.subheader("💼 Portfolio Composition")
+                if portfolio_type == "Options Portfolio":
+                    st.subheader("📊 Options Position")
+                else:
+                    st.subheader("💼 Portfolio Composition")
+                    
                 portfolio_composition = pd.DataFrame({
                     'Asset': st.session_state.symbols,
                     'Weight': [f"{w:.4f}" for w in st.session_state.weights],
                     'Weight (%)': [f"{w*100:.2f}%" for w in st.session_state.weights]
                 })
                 safe_dataframe_display(portfolio_composition, "Portfolio Composition", "portfolio_weights")
-
-            # Data Quality Report
-            st.subheader("🔍 Data Quality")
-            quality_report = instances['utils'].validate_data_quality(st.session_state.current_data)
-            if quality_report:
-                quality_metrics = {
-                    'Data Valid': "✅ Yes" if quality_report['valid'] else "❌ No",
-                    'Warnings': len(quality_report.get('warnings', [])),
-                    'Errors': len(quality_report.get('errors', [])),
-                    'Recommendations': len(quality_report.get('recommendations', []))
-                }
-                quality_df = create_metrics_dataframe(quality_metrics, "Data Quality")
-                safe_dataframe_display(quality_df, "Data Quality", "data_quality")
-
-                # Show warnings and recommendations
-                if quality_report.get('warnings'):
-                    st.warning("⚠️ Data Quality Warnings:")
-                    for warning in quality_report['warnings']:
-                        st.write(f"• {warning}")
-
-                if quality_report.get('recommendations'):
-                    st.info("💡 Recommendations:")
-                    for rec in quality_report['recommendations']:
-                        st.write(f"• {rec}")
 
         with tab4:  # Rolling Analysis
             st.header("🔄 Rolling Analysis")
@@ -1188,12 +1113,15 @@ def main():
             rolling_mask = (st.session_state.current_data.index >= pd.to_datetime(rolling_start)) & \
                           (st.session_state.current_data.index <= pd.to_datetime(rolling_end))
             rolling_filtered_data = st.session_state.current_data.loc[rolling_mask]
-            rolling_filtered_returns = rolling_filtered_data.pct_change().dropna()
-
-            if len(rolling_filtered_returns.shape) > 1:
-                rolling_portfolio_returns = rolling_filtered_returns.dot(st.session_state.weights)
+            
+            if portfolio_type == "Options Portfolio":
+                rolling_portfolio_returns = rolling_filtered_data['Option'].pct_change().dropna()
             else:
-                rolling_portfolio_returns = rolling_filtered_returns
+                rolling_filtered_returns = rolling_filtered_data.pct_change().dropna()
+                if len(rolling_filtered_returns.shape) > 1:
+                    rolling_portfolio_returns = rolling_filtered_returns.dot(st.session_state.weights)
+                else:
+                    rolling_portfolio_returns = rolling_filtered_returns
 
             if len(rolling_portfolio_returns) > rolling_window:
                 # Calculate rolling metrics
@@ -1262,26 +1190,24 @@ def main():
             backtest_mask = (st.session_state.current_data.index >= pd.to_datetime(backtest_start)) & \
                            (st.session_state.current_data.index <= pd.to_datetime(backtest_end))
             backtest_filtered_data = st.session_state.current_data.loc[backtest_mask]
-            backtest_filtered_returns = backtest_filtered_data.pct_change().dropna()
-
-            if len(backtest_filtered_returns.shape) > 1:
-                backtest_portfolio_returns = backtest_filtered_returns.dot(st.session_state.weights)
+            
+            if portfolio_type == "Options Portfolio":
+                backtest_portfolio_returns = backtest_filtered_data['Option'].pct_change().dropna()
             else:
-                backtest_portfolio_returns = backtest_filtered_returns
+                backtest_filtered_returns = backtest_filtered_data.pct_change().dropna()
+                if len(backtest_filtered_returns.shape) > 1:
+                    backtest_portfolio_returns = backtest_filtered_returns.dot(st.session_state.weights)
+                else:
+                    backtest_portfolio_returns = backtest_filtered_returns
 
             if st.button("🔄 Run Backtesting", key="run_backtesting_button"):
                 if len(backtest_portfolio_returns) >= backtesting_window + 50:
                     with st.spinner("Running backtesting..."):
-                        # Create a VaR function for backtesting that handles options
+                        # Create a VaR function for backtesting
                         def var_function(returns, conf_level, horizon):
-                            if portfolio_type == "Options Portfolio" and st.session_state.options_data is not None:
-                                # Use options-specific VaR for backtesting
-                                options_result = calculate_options_var_comprehensive(
-                                    st.session_state.options_data, var_model, conf_level, horizon
-                                )
-                                return options_result['var'] if options_result else 0
+                            if portfolio_type == "Options Portfolio":
+                                return calculate_options_var_comprehensive(returns, conf_level, 'historical')
                             else:
-                                # Standard VaR calculation
                                 if var_model == "Parametric (Delta-Normal)":
                                     return instances['var_engines'].calculate_parametric_var(returns, conf_level, horizon)
                                 elif var_model == "Historical Simulation":
@@ -1308,10 +1234,6 @@ def main():
                                     'Kupiec Test p-value': f"{backtest_results.get('kupiec_pvalue', 0):.4f}",
                                     'Model Performance': 'Adequate' if backtest_results.get('kupiec_pvalue', 0) > 0.05 else 'Needs Review'
                                 }
-                                
-                                if portfolio_type == "Options Portfolio":
-                                    backtest_metrics['Portfolio Type'] = 'Options Portfolio'
-                                
                                 backtest_df = create_metrics_dataframe(backtest_metrics, "Backtesting Results")
                                 safe_dataframe_display(backtest_df, "Backtesting Results", "backtesting_results")
 
@@ -1356,12 +1278,15 @@ def main():
             stress_mask = (st.session_state.current_data.index >= pd.to_datetime(stress_start)) & \
                          (st.session_state.current_data.index <= pd.to_datetime(stress_end))
             stress_filtered_data = st.session_state.current_data.loc[stress_mask]
-            stress_filtered_returns = stress_filtered_data.pct_change().dropna()
-
-            if len(stress_filtered_returns.shape) > 1:
-                stress_portfolio_returns = stress_filtered_returns.dot(st.session_state.weights)
+            
+            if portfolio_type == "Options Portfolio":
+                stress_portfolio_returns = stress_filtered_data['Option'].pct_change().dropna()
             else:
-                stress_portfolio_returns = stress_filtered_returns
+                stress_filtered_returns = stress_filtered_data.pct_change().dropna()
+                if len(stress_filtered_returns.shape) > 1:
+                    stress_portfolio_returns = stress_filtered_returns.dot(st.session_state.weights)
+                else:
+                    stress_portfolio_returns = stress_filtered_returns
 
             # Stress testing options
             stress_type = st.selectbox(
@@ -1371,11 +1296,18 @@ def main():
             )
 
             if stress_type == "Historical Scenarios":
-                scenario = st.selectbox(
-                    "Select Historical Scenario",
-                    ["2008 Financial Crisis", "COVID-19 Pandemic", "Dot-com Crash"],
-                    key="historical_scenario_select"
-                )
+                if portfolio_type == "Options Portfolio":
+                    scenario = st.selectbox(
+                        "Select Historical Scenario",
+                        ["2008 Financial Crisis", "COVID-19 Pandemic", "Dot-com Crash", "High Volatility Spike"],
+                        key="historical_scenario_select"
+                    )
+                else:
+                    scenario = st.selectbox(
+                        "Select Historical Scenario",
+                        ["2008 Financial Crisis", "COVID-19 Pandemic", "Dot-com Crash"],
+                        key="historical_scenario_select"
+                    )
 
                 if st.button("🔄 Run Historical Stress Test", key="run_historical_stress_button"):
                     with st.spinner("Running stress test..."):
@@ -1395,10 +1327,6 @@ def main():
                                     'Worst Case Loss': f"${stress_results.get('worst_case', 0):,.2f}",
                                     'Scenario': stress_results.get('scenario_description', 'N/A')
                                 }
-                                
-                                if portfolio_type == "Options Portfolio":
-                                    stress_metrics['Portfolio Type'] = 'Options Portfolio'
-                                
                                 stress_df = create_metrics_dataframe(stress_metrics, "Stress Test Results")
                                 safe_dataframe_display(stress_df, "Stress Test Results", "stress_results")
 
@@ -1443,10 +1371,6 @@ def main():
                                 'VaR Increase': f"{custom_stress_results.get('var_increase', 0):.2f}%",
                                 'Worst Case Loss': f"${custom_stress_results.get('worst_case', 0):,.2f}"
                             }
-                            
-                            if portfolio_type == "Options Portfolio":
-                                custom_stress_metrics['Portfolio Type'] = 'Options Portfolio'
-                            
                             custom_stress_df = create_metrics_dataframe(custom_stress_metrics, "Custom Stress Results")
                             safe_dataframe_display(custom_stress_df, "Custom Stress Results", "custom_stress_results")
 
@@ -1472,32 +1396,160 @@ def main():
                 example_df = create_metrics_dataframe(example_options, "Example Options")
                 safe_dataframe_display(example_df, "Example Options Configuration", "example_options")
 
-                # Options VaR methodology explanation
-                st.subheader("📚 Options VaR Methodologies")
-                st.markdown("""
-                **Available Options VaR Methods:**
-                
-                1. **Delta-Normal**: Uses option delta to approximate price sensitivity to underlying movements
-                2. **Delta-Gamma**: Includes gamma for better approximation of non-linear price relationships
-                3. **Full Revaluation Monte Carlo**: Complete revaluation of option prices under simulated scenarios
-                4. **Historical Simulation**: Uses historical underlying price movements to simulate option P&L
-                
-                **Key Features for Options Portfolios:**
-                - Real-time options chain data fetching
-                - Automatic ATM option selection
-                - Comprehensive Greeks calculation
-                - Options-specific stress testing
-                - Time decay (theta) analysis
-                """)
+        # Help tab (always last)
+        with (tab7 if portfolio_type == "Options Portfolio" else tab8):  # Help
+            st.header("❓ Help & Documentation")
 
-        # Help tab
-        help_tab_index = 7 if portfolio_type == "Options Portfolio" else 8
-        if portfolio_type == "Options Portfolio":
-            with tab7:  # Help
-                display_help_content(portfolio_type)
-        else:
-            with tab8:  # Help
-                display_help_content(portfolio_type)
+            st.markdown(f"""
+            ## 🚀 Welcome to the VaR & Risk Analytics Platform
+            
+            This comprehensive platform provides sophisticated financial risk modeling capabilities for portfolio management and risk assessment.
+            
+            ### 📊 Getting Started
+            
+            1. **Select Portfolio Type**: Choose from Single Asset, Multi-Asset, Crypto, or Options Portfolio
+            2. **Configure Data Source**: For non-options portfolios, select data source
+            3. **Choose VaR Model**: Select from sophisticated VaR calculation methods
+            4. **Set Parameters**: Configure confidence levels, time horizons, and other settings
+            5. **Load Data**: Click the "Load Data" button to begin analysis
+            
+            ### 💼 Portfolio Types
+            
+            #### Single Asset
+            - **Default**: AAPL
+            - **Format**: Standard ticker symbols (AAPL, GOOGL, MSFT, TSLA)
+            
+            #### Multi-Asset
+            - **Default**: AAPL,GOOGL,MSFT,TSLA
+            - **Format**: Comma-separated ticker symbols
+            - **Crypto Support**: Add crypto symbols in the crypto field (BTC-USD, ETH-USD)
+            
+            #### Crypto Portfolio
+            - **Default**: BTC-USD
+            - **Format**: Crypto symbols with -USD suffix (BTC-USD, ETH-USD, ADA-USD)
+            
+            #### Options Portfolio
+            - **Live Market**: Fetches real options data using yfinance
+            - **Manual Entry**: Configure custom option parameters
+            - **Default**: AAPL call option (Strike: $155, Expiry: 3 months)
+            
+            ### 📈 VaR Models
+            
+            {"#### Standard Models" if portfolio_type != "Options Portfolio" else "#### Options VaR Models"}
+            {"1. **Parametric (Delta-Normal)**: Classical normal distribution approach" if portfolio_type != "Options Portfolio" else "1. **Historical Simulation**: Non-parametric historical method"}
+            {"2. **Historical Simulation**: Non-parametric historical method" if portfolio_type != "Options Portfolio" else "2. **Parametric (Delta-Normal)**: Classical normal distribution approach"}
+            {"3. **Monte Carlo**: Simulation-based approach (1K-100K simulations)" if portfolio_type != "Options Portfolio" else "3. **Monte Carlo**: Simulation-based approach for options"}
+            {"4. **GARCH**: Advanced volatility modeling for time-varying risk" if portfolio_type != "Options Portfolio" else "4. **Historic Simulation**: Enhanced historical method for options"}
+            {"5. **Extreme Value Theory (EVT)**: Tail risk modeling for extreme events" if portfolio_type != "Options Portfolio" else ""}
+            
+            ### 📁 File Upload Formats
+            
+            #### CSV Format
+            ```
+            Date,Asset1,Asset2,Asset3
+            2023-01-01,100.50,200.25,150.75
+            2023-01-02,101.25,198.50,152.00
+            2023-01-03,99.75,201.00,149.25
+            ```
+            
+            #### Excel Format
+            - Same structure as CSV
+            - First column: Date (YYYY-MM-DD format)
+            - Subsequent columns: Asset prices
+            - Headers recommended for clarity
+            
+            ### 🎯 Key Features
+            
+            #### Individual Graph Time Controls
+            - Each tab has independent time range selectors
+            - Default 1-year period with customizable start/end dates
+            - Automatic data filtering for selected periods
+            
+            #### Data Persistence
+            - Generated data survives model changes
+            - Only calculations update when switching VaR models
+            - Session state maintains data across interactions
+            
+            #### Real-time Updates
+            - All tabs update dynamically when parameters change
+            - Model switching preserves loaded data
+            - Consistent results across different methodologies
+            
+            ### 🔧 Configuration Tips
+            
+            #### Risk Parameters
+            - **Confidence Levels**: 90%, 95%, 99% (95% is standard)
+            - **Time Horizons**: 1-30 days (1-day most common)
+            - **Historical Windows**: 30-1000 days (252 days = 1 trading year)
+            
+            #### Model-Specific Settings
+            - **Monte Carlo**: 10K simulations recommended for balance of speed/accuracy
+            - **GARCH**: (1,1) specification is industry standard
+            - **Backtesting**: 252-day window provides 1 year of validation
+            
+            {"#### Options-Specific Settings" if portfolio_type == "Options Portfolio" else ""}
+            {"- **Live Market**: Automatically fetches closest ATM options" if portfolio_type == "Options Portfolio" else ""}
+            {"- **Manual Entry**: Full control over option parameters" if portfolio_type == "Options Portfolio" else ""}
+            {"- **Greeks Calculation**: Real-time Delta, Gamma, Theta, Vega" if portfolio_type == "Options Portfolio" else ""}
+            {"- **Time Decay**: Automatic theta impact calculation" if portfolio_type == "Options Portfolio" else ""}
+            
+            ### 🚨 Troubleshooting
+            
+            #### Common Issues
+            - **"Insufficient data"**: Increase historical window or data period
+            - **"GARCH model failed"**: Requires minimum 100 observations
+            - **"Symbol not found"**: Verify ticker format (add -USD for crypto)
+            - **"Weights don't sum to 1"**: Portfolio weights are automatically normalized
+            
+            #### Cryptocurrency Issues
+            - **API Failures**: System automatically generates realistic synthetic crypto data
+            - **Symbol Format**: Ensure crypto symbols end with -USD (e.g., BTC-USD)
+            - **Data Quality**: Fallback provides realistic price movements for analysis
+            """)
+            
+            if portfolio_type == "Options Portfolio":
+                st.markdown("""
+                #### Options-Specific Issues
+                - **"No options data found"**: Symbol may not have listed options
+                - **"Options chain empty"**: Try a different expiry date
+                - **"Strike not available"**: System will find closest available strike
+                - **"Time to expiry too short"**: Minimum 1 day required
+                """)
+            
+            st.markdown("""
+            ### 📊 Output Interpretation
+            
+            #### VaR Results
+            - **VaR(95%, 1-day) = $10,000**: 95% confidence that daily losses won't exceed $10,000
+            - **Expected Shortfall**: Average loss when VaR threshold is breached
+            - **Model Comparison**: Side-by-side results from different methodologies
+            
+            #### Backtesting Metrics
+            - **Kupiec p-value > 0.05**: Model passes statistical validation
+            - **Violation Rate**: Should approximate (1 - confidence level)
+            - **Basel Traffic Light**: Green (good), Yellow (attention), Red (review required)
+            
+            ### 🎓 Academic Background
+            
+            The platform implements industry-standard methodologies based on:
+            - **Basel Committee**: International regulatory framework for VaR
+            - **RiskMetrics**: J.P. Morgan's technical document (1996)
+            - **Extreme Value Theory**: Embrechts, Klüppelberg, and Mikosch
+            - **GARCH Models**: Engle (1982), Bollerslev (1986)
+            - **Options Pricing**: Black-Scholes-Merton model
+            
+            ### 💡 Best Practices
+            
+            1. **Start Simple**: Begin with single asset and parametric VaR
+            2. **Validate Models**: Always run backtesting to verify model performance
+            3. **Compare Methods**: Use multiple VaR models for robust risk assessment
+            4. **Stress Test**: Regular stress testing reveals portfolio vulnerabilities
+            5. **Monitor Regularly**: Risk metrics should be updated frequently
+            
+            ### 📞 Support
+            
+            For additional support or questions about specific features, refer to the academic literature or consult with risk management professionals.
+            """)
 
     else:
         # Welcome screen when no data is loaded
@@ -1539,186 +1591,6 @@ def main():
                 <p>Backtesting, stress testing, and scenario analysis with regulatory compliance metrics</p>
             </div>
             """, unsafe_allow_html=True)
-
-def display_help_content(portfolio_type):
-    """Display help content with portfolio-specific information"""
-    st.header("❓ Help & Documentation")
-
-    st.markdown(f"""
-    ## 🚀 Welcome to the VaR & Risk Analytics Platform
-    
-    This comprehensive platform provides sophisticated financial risk modeling capabilities for portfolio management and risk assessment.
-    
-    ### 📊 Getting Started
-    
-    1. **Select Data Source**: Choose from Live Market Data, Upload File, Manual Entry, or Synthetic Data
-    2. **Configure Portfolio**: Define portfolio type and asset allocation
-    3. **Choose VaR Model**: Select from 5 sophisticated VaR calculation methods
-    4. **Set Parameters**: Configure confidence levels, time horizons, and other settings
-    5. **Load Data**: Click the "Load Data" button to begin analysis
-    
-    ### 💼 Portfolio Types
-    
-    #### Single Asset
-    - **Default**: AAPL
-    - **Format**: Standard ticker symbols (AAPL, GOOGL, MSFT, TSLA)
-    
-    #### Multi-Asset
-    - **Default**: AAPL,GOOGL,MSFT,TSLA
-    - **Format**: Comma-separated ticker symbols
-    - **Crypto Support**: Add crypto symbols in the crypto field (BTC-USD, ETH-USD)
-    
-    #### Crypto Portfolio
-    - **Default**: BTC-USD
-    - **Format**: Crypto symbols with -USD suffix (BTC-USD, ETH-USD, ADA-USD)
-    
-    #### Options Portfolio {"⭐ **ENHANCED**" if portfolio_type == "Options Portfolio" else ""}
-    - **Manual Entry**: Set strike price, spot price, volatility, and other parameters
-    - **Live Market**: Fetch real options data using yfinance
-    - **Default**: AAPL call option (Strike: $155, Expiry: 3 months)
-    - **Features**: 
-      - Automatic ATM option selection
-      - Real-time options chain data
-      - Comprehensive Greeks calculation
-      - Options-specific VaR methodologies
-      - Historic simulation for options VaR
-    
-    ### 📈 VaR Models
-    
-    1. **Parametric (Delta-Normal)**: Classical normal distribution approach
-    2. **Historical Simulation**: Non-parametric historical method
-    3. **Monte Carlo**: Simulation-based approach (1K-100K simulations)
-    4. **GARCH**: Advanced volatility modeling for time-varying risk
-    5. **Extreme Value Theory (EVT)**: Tail risk modeling for extreme events
-    
-    {"### 🎯 Options-Specific Features" if portfolio_type == "Options Portfolio" else ""}
-    
-    {"#### Options VaR Methods" if portfolio_type == "Options Portfolio" else ""}
-    {"- **Delta-Normal**: Uses option delta for price sensitivity approximation" if portfolio_type == "Options Portfolio" else ""}
-    {"- **Delta-Gamma**: Includes gamma for non-linear price relationships" if portfolio_type == "Options Portfolio" else ""}
-    {"- **Monte Carlo**: Full revaluation under simulated scenarios" if portfolio_type == "Options Portfolio" else ""}
-    {"- **Historic Simulation**: Uses historical underlying movements" if portfolio_type == "Options Portfolio" else ""}
-    
-    {"#### Live Market Integration" if portfolio_type == "Options Portfolio" else ""}
-    {"- Automatic fetching of options chains using yfinance" if portfolio_type == "Options Portfolio" else ""}
-    {"- Closest-to-ATM option selection by default" if portfolio_type == "Options Portfolio" else ""}
-    {"- Customizable strike and expiry selection" if portfolio_type == "Options Portfolio" else ""}
-    {"- Real-time underlying price updates" if portfolio_type == "Options Portfolio" else ""}
-    
-    {"#### Options Greeks" if portfolio_type == "Options Portfolio" else ""}
-    {"- **Delta**: Price sensitivity to underlying movements" if portfolio_type == "Options Portfolio" else ""}
-    {"- **Gamma**: Rate of change of delta" if portfolio_type == "Options Portfolio" else ""}
-    {"- **Theta**: Time decay (daily)" if portfolio_type == "Options Portfolio" else ""}
-    {"- **Vega**: Volatility sensitivity" if portfolio_type == "Options Portfolio" else ""}
-    
-    ### 📁 File Upload Formats
-    
-    #### CSV Format
-    ```
-    Date,Asset1,Asset2,Asset3
-    2023-01-01,100.50,200.25,150.75
-    2023-01-02,101.25,198.50,152.00
-    2023-01-03,99.75,201.00,149.25
-    ```
-    
-    #### Excel Format
-    - Same structure as CSV
-    - First column: Date (YYYY-MM-DD format)
-    - Subsequent columns: Asset prices
-    - Headers recommended for clarity
-    
-    ### 🎯 Key Features
-    
-    #### Individual Graph Time Controls
-    - Each tab has independent time range selectors
-    - Default 1-year period with customizable start/end dates
-    - Automatic data filtering for selected periods
-    
-    #### Data Persistence
-    - Generated data survives model changes
-    - Only calculations update when switching VaR models
-    - Session state maintains data across interactions
-    
-    #### Real-time Updates
-    - All tabs update dynamically when parameters change
-    - Model switching preserves loaded data
-    - Consistent results across different methodologies
-    
-    ### 🔧 Configuration Tips
-    
-    #### Risk Parameters
-    - **Confidence Levels**: 90%, 95%, 99% (95% is standard)
-    - **Time Horizons**: 1-30 days (1-day most common)
-    - **Historical Windows**: 30-1000 days (252 days = 1 trading year)
-    
-    #### Model-Specific Settings
-    - **Monte Carlo**: 10K simulations recommended for balance of speed/accuracy
-    - **GARCH**: (1,1) specification is industry standard
-    - **Backtesting**: 252-day window provides 1 year of validation
-    
-    {"#### Options-Specific Settings" if portfolio_type == "Options Portfolio" else ""}
-    {"- **Time to Expiry**: 0.01-2.0 years (0.25 years = 3 months typical)" if portfolio_type == "Options Portfolio" else ""}
-    {"- **Risk-free Rate**: 0-10% (5% is current typical)" if portfolio_type == "Options Portfolio" else ""}
-    {"- **Volatility**: 10-100% (20-30% typical for stocks)" if portfolio_type == "Options Portfolio" else ""}
-    {"- **Quantity**: Number of option contracts" if portfolio_type == "Options Portfolio" else ""}
-    
-    ### 🚨 Troubleshooting
-    
-    #### Common Issues
-    - **"Insufficient data"**: Increase historical window or data period
-    - **"GARCH model failed"**: Requires minimum 100 observations
-    - **"Symbol not found"**: Verify ticker format (add -USD for crypto)
-    - **"Weights don't sum to 1"**: Portfolio weights are automatically normalized
-    
-
-    
-    #### Cryptocurrency Issues
-    - **API Failures**: System automatically generates realistic synthetic crypto data
-    - **Symbol Format**: Ensure crypto symbols end with -USD (e.g., BTC-USD)
-    - **Data Quality**: Fallback provides realistic price movements for analysis
-    
-    ### 📊 Output Interpretation
-    
-    #### VaR Results
-    - **VaR(95%, 1-day) = $10,000**: 95% confidence that daily losses won't exceed $10,000
-    - **Expected Shortfall**: Average loss when VaR threshold is breached
-    - **Model Comparison**: Side-by-side results from different methodologies
-    
-    {"#### Options VaR Results" if portfolio_type == "Options Portfolio" else ""}
-    {"- **Options VaR**: Maximum expected loss on option position" if portfolio_type == "Options Portfolio" else ""}
-    {"- **Position Value**: Current market value of option position" if portfolio_type == "Options Portfolio" else ""}
-    {"- **Greeks Impact**: How option price changes with market factors" if portfolio_type == "Options Portfolio" else ""}
-    
-    #### Backtesting Metrics
-    - **Kupiec p-value > 0.05**: Model passes statistical validation
-    - **Violation Rate**: Should approximate (1 - confidence level)
-    - **Basel Traffic Light**: Green (good), Yellow (attention), Red (review required)
-    
-    ### 🎓 Academic Background
-    
-    The platform implements industry-standard methodologies based on:
-    - **Basel Committee**: International regulatory framework for VaR
-    - **RiskMetrics**: J.P. Morgan's technical document (1996)
-    - **Extreme Value Theory**: Embrechts, Klüppelberg, and Mikosch
-    - **GARCH Models**: Engle (1982), Bollerslev (1986)
-    - **Options Pricing**: Black-Scholes-Merton model
-    {"- **Options Risk**: Natenberg (1994), Hull (2017)" if portfolio_type == "Options Portfolio" else ""}
-    
-    ### 💡 Best Practices
-    
-    1. **Start Simple**: Begin with single asset and parametric VaR
-    2. **Validate Models**: Always run backtesting to verify model performance
-    3. **Compare Methods**: Use multiple VaR models for robust risk assessment
-    4. **Stress Test**: Regular stress testing reveals portfolio vulnerabilities
-    5. **Monitor Regularly**: Risk metrics should be updated frequently
-    {"6. **Options Greeks**: Monitor delta, gamma, theta, and vega for options positions" if portfolio_type == "Options Portfolio" else ""}
-    {"7. **Time Decay**: Consider theta impact on options positions" if portfolio_type == "Options Portfolio" else ""}
-    {"8. **Volatility Risk**: Monitor vega exposure in volatile markets" if portfolio_type == "Options Portfolio" else ""}
-    
-    ### 📞 Support
-    
-    For additional support or questions about specific features, refer to the academic literature or consult with risk management professionals.
-    """)
 
 if __name__ == "__main__":
     main()
