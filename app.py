@@ -156,8 +156,8 @@ def initialize_session_state():
         st.session_state.var_results = {}
     if 'model_changed' not in st.session_state:
         st.session_state.model_changed = False
-    if 'options_data' not in st.session_state:
-        st.session_state.options_data = None
+    if 'option_data_fetcher' not in st.session_state:
+        st.session_state.option_data_fetcher = None
     if 'selected_option' not in st.session_state:
         st.session_state.selected_option = None
     if 'options_expirations' not in st.session_state:
@@ -191,7 +191,7 @@ def reset_data_on_config_change(portfolio_type, data_source):
         st.session_state.data_loaded = False
         st.session_state.current_data = None
         st.session_state.current_returns = None
-        st.session_state.options_data = None
+        st.session_state.option_data_fetcher = None
         st.session_state.selected_option = None
         st.session_state.options_expirations = None
         st.session_state.option_params = None
@@ -237,10 +237,10 @@ def main():
         # Data Source Selection for Options Portfolio (moved here)
         if portfolio_type == "Options Portfolio":
             st.subheader("📊 Data Source")
-            options_data_source = st.selectbox(
+            option_data_fetcher_source = st.selectbox(
                 "Options Data Source",
                 ["Live Market Data", "Manual Entry"],
-                key="options_data_source_select"
+                key="option_data_fetcher_source_select"
             )
             data_source = "Options Data"
         else:
@@ -334,7 +334,7 @@ def main():
             option_type_str = "Call"
             quantity = 100
 
-            if options_data_source == "Live Market Data":
+            if option_data_fetcher_source == "Live Market Data":
                 st.write("**Live Market Options:**")
                 underlying = st.text_input("Underlying Symbol", "AAPL", key="options_underlying_input")
 
@@ -342,30 +342,30 @@ def main():
                 if st.button("🔄 Fetch Options Data", key="fetch_options_button"):
                     with st.spinner("Fetching options data..."):
                         try:
-                            options_data = instances['options_fetcher'].get_options_data(underlying, use_synthetic=False)
-                            if options_data and options_data.get('options_chains'):
-                                st.session_state.options_data = options_data
-                                st.session_state.options_expirations = options_data.get('expiry_dates', [])
-                                spot_price = options_data.get('current_price', 150.0)
+                            option_data_fetcher = instances['option_data_fetcher'].get_option_data_fetcher(underlying, use_synthetic=False)
+                            if option_data_fetcher and option_data_fetcher.get('options_chains'):
+                                st.session_state.option_data_fetcher = option_data_fetcher
+                                st.session_state.options_expirations = option_data_fetcher.get('expiry_dates', [])
+                                spot_price = option_data_fetcher.get('current_price', 150.0)
                                 st.success(f"✅ Fetched options data for {underlying}")
                             else:
                                 st.warning(f"Could not fetch live options data for {underlying}. Using synthetic data.")
-                                options_data = instances['options_fetcher'].generate_synthetic_options_data(underlying, spot_price)
-                                st.session_state.options_data = options_data
-                                st.session_state.options_expirations = options_data.get('expiry_dates', [])
+                                option_data_fetcher = instances['option_data_fetcher'].generate_synthetic_option_data_fetcher(underlying, spot_price)
+                                st.session_state.option_data_fetcher = option_data
+                                st.session_state.options_expirations = option_data_fetcher.get('expiry_dates', [])
                         except Exception as e:
                             st.error(f"Error fetching options data: {str(e)}")
                             st.info("Generating synthetic options data for demonstration.")
-                            options_data = instances['options_data_fetcher'].generate_synthetic_options_data(underlying, spot_price)
-                            st.session_state.options_data = options_data
-                            st.session_state.options_expirations = options_data.get('expiry_dates', [])
+                            option_data_fetcher = instances['option_data_fetcher_fetcher'].generate_synthetic_option_data_fetcher(underlying, spot_price)
+                            st.session_state.option_data_fetcher = option_data_fetcher
+                            st.session_state.options_expirations = option_data_fetcher.get('expiry_dates', [])
 
                 # Options selection if data is available
-                if hasattr(st.session_state, 'options_data') and st.session_state.options_data is not None:
+                if hasattr(st.session_state, 'option_data_fetcher') and st.session_state.option_data_fetcher is not None:
                     option_type_str = st.selectbox("Option Type", ["Call", "Put"], key="live_option_type_select")
 
                     # Get available expiry dates
-                    available_expiries = list(st.session_state.options_data.get('options_chains', {}).keys())
+                    available_expiries = list(st.session_state.option_data_fetcher.get('options_chains', {}).keys())
                     if available_expiries:
                         selected_expiry = st.selectbox(
                             "Expiry Date",
@@ -374,7 +374,7 @@ def main():
                         )
 
                         # Get the appropriate options dataframe
-                        chain_data = st.session_state.options_data['options_chains'].get(selected_expiry, {})
+                        chain_data = st.session_state.option_data_fetcher['options_chains'].get(selected_expiry, {})
                         if option_type_str == "Call":
                             options_df = chain_data.get('calls', pd.DataFrame())
                         else:
@@ -405,7 +405,7 @@ def main():
                                 st.write(f"**Ask:** ${selected_option_data.get('ask', 0):.2f}")
 
                             # Set parameters for calculations
-                            spot_price = st.session_state.options_data.get('current_price', 150.0)
+                            spot_price = st.session_state.option_data_fetcher.get('current_price', 150.0)
                             strike_price = selected_strike
                             # Calculate time to expiry
                             expiry_date = datetime.strptime(selected_expiry, '%Y-%m-%d').date()
@@ -419,7 +419,7 @@ def main():
                     else:
                         st.warning("No expiry dates available")
 
-            if options_data_source == "Manual Entry":
+            if option_data_fetcher_source == "Manual Entry":
                 st.write("**Manual Options Entry:**")
                 underlying = st.text_input("Underlying Symbol", "AAPL", key="manual_underlying_input")
                 spot_price = st.number_input("Current Spot Price ($)", 50.0, 1000.0, 150.0, 1.0, key="manual_spot_price_input")
