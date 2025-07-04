@@ -242,8 +242,7 @@ def generate_synthetic_option_data(
     risk_free_rate=0.05,
     volatility=0.25,
     option_type="call",
-    underlying="AAPL"
-):
+    underlying="AAPL"):
     """Generate synthetic option data for a given setup or fallback"""
     
     current_price = spot_price
@@ -301,8 +300,7 @@ def generate_synthetic_option_data(
         }
 
         options_data['options'].append(contract)
-
-    return options_data
+        return options_data
 
 
 
@@ -318,8 +316,7 @@ def generate_synthetic_option_data(
             if options_data is None or not options_data.get('options_chains'):
                 st.warning("Live options data unavailable. Generating synthetic data for demonstration.")
                 return self.generate_synthetic_options_data(symbol) 
-                
-         return options_data
+            return options_data
     
     def find_closest_atm_option(self, options_data, option_type='call', target_dte=None):
         """Find the closest at-the-money option"""
