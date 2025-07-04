@@ -503,14 +503,14 @@ def main():
                 try:
                     if portfolio_type == "Options Portfolio":
                         # Generate or load options data
-                        data = instances['options_fetcher'].generate_synthetic_option_data(
+                        data = instances['options_data_fetcher'].generate_synthetic_option_data(
                             spot_price, strike_price, time_to_expiry, 
                             risk_free_rate, volatility, option_type_str.lower(), underlying,
                         )
 
                         if data is not None :
                             st.session_state.current_data = data
-                            st.session_state.current_returns = data['Option_Price'].pct_change().dropna()
+                            st.session_state.current_returns = data['Options'].pct_change().dropna()
                             st.session_state.data_loaded = True
                             st.session_state.symbols = [f"{underlying}_{option_type_str}_{strike_price}"]
                             st.session_state.weights = [1.0]
