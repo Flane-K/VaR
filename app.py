@@ -78,208 +78,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-def black_scholes_price(S, K, T, r, sigma, option_type='call'):
-    """Calculate Black-Scholes option price"""
-    try:
-        if T <= 0:
-            if option_type == 'call':
-                return max(S - K, 0)
-            else:
-                return max(K - S, 0)
-
-        d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
-        d2 = d1 - sigma * np.sqrt(T)
-
-        if option_type == 'call':
-            price = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
-        else:
-            price = K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
-
-        return max(price, 0)
-    except:
-        return 0
-
-def calculate_option_greeks(S, K, T, r, sigma, option_type='call'):
-    """Calculate option Greeks"""
-    try:
-        if T <= 0:
-            return {'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0}
-
-        d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
-        d2 = d1 - sigma * np.sqrt(T)
-
-        # Delta
-        if option_type == 'call':
-            delta = norm.cdf(d1)
-        else:
-            delta = norm.cdf(d1) - 1
-
-        # Gamma
-        gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
-
-        # Theta
-        if option_type == 'call':
-            theta = (-S * norm.pdf(d1) * sigma / (2 * np.sqrt(T)) 
-                    - r * K * np.exp(-r * T) * norm.cdf(d2)) / 365
-        else:
-            theta = (-S * norm.pdf(d1) * sigma / (2 * np.sqrt(T)) 
-                    + r * K * np.exp(-r * T) * norm.cdf(-d2)) / 365
-
-        # Vega
-        vega = S * norm.pdf(d1) * np.sqrt(T) / 100
-
-        return {
-            'delta': delta,
-            'gamma': gamma,
-            'theta': theta,
-            'vega': vega
-        }
-    except:
-        return {'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0}
-
-def calculate_delta_gamma_var(S, K, T, r, sigma, option_type, confidence_level, underlying_returns, portfolio_value=100000):
-    """Calculate Delta-Gamma VaR for options using Taylor expansion"""
-    try:
-        # Calculate Greeks
-        greeks = calculate_option_greeks(S, K, T, r, sigma, option_type)
-        delta = greeks['delta']
-        gamma = greeks['gamma']
-        
-        # Get underlying return statistics
-        if len(underlying_returns) == 0:
-            return 0
-            
-        underlying_vol = underlying_returns.std()
-        
-        # Calculate VaR percentile
-        z_score = norm.ppf(confidence_level)
-        
-        # Underlying price change for VaR calculation
-        delta_S = S * underlying_vol * z_score
-        
-        # Delta-Gamma approximation for option price change
-        # ΔP ≈ Δ × ΔS + 0.5 × Γ × (ΔS)²
-        option_price_change = delta * delta_S + 0.5 * gamma * (delta_S ** 2)
-        
-        # Convert to portfolio VaR
-        var_result = abs(option_price_change * portfolio_value / S)
-        
-        return var_result
-        
-    except Exception as e:
-        st.error(f"Error calculating Delta-Gamma VaR: {str(e)}")
-        return 0
-
-def generate_option_synthetic_data(S0, K, T, r, sigma, option_type, underlying_symbol, num_days=252):
-    """Generate synthetic option price data using Black-Scholes"""
-    try:
-        dates = pd.date_range(start=datetime.now() - timedelta(days=num_days), 
-                             end=datetime.now(), freq='D')
-
-        # Generate underlying price path using GBM
-        dt = 1/252
-        returns = np.random.normal((r - 0.5 * sigma**2) * dt, sigma * np.sqrt(dt), num_days)
-
-        underlying_prices = [S0]
-        for ret in returns[1:]:
-            underlying_prices.append(underlying_prices[-1] * np.exp(ret))
-
-        # Calculate option prices for each underlying price
-        option_prices = []
-        for i, S in enumerate(underlying_prices):
-            time_to_expiry = T - (i * dt)
-            if time_to_expiry > 0:
-                option_price = black_scholes_price(S, K, time_to_expiry, r, sigma, option_type)
-            else:
-                if option_type == 'call':
-                    option_price = max(S - K, 0)
-                else:
-                    option_price = max(K - S, 0)
-            option_prices.append(option_price)
-
-        # Create DataFrame with proper column names
-        data = pd.DataFrame({
-            'Date': dates[:len(option_prices)],
-            underlying_symbol: underlying_prices[:len(option_prices)],
-            'Option_Price': option_prices
-        })
-        data.set_index('Date', inplace=True)
-
-        return data
-    except Exception as e:
-        st.error(f"Error generating synthetic option data: {str(e)}")
-        return None
-
-def calculate_options_var_comprehensive(option_returns, confidence_level, method='historical'):
-    """Calculate VaR for options using various methods"""
-    try:
-        if option_returns.empty:
-            return 0
-
-        if method == 'historical':
-            var_percentile = (1 - confidence_level) * 100
-            var = np.percentile(option_returns, var_percentile)
-        elif method == 'parametric':
-            mean = option_returns.mean()
-            std = option_returns.std()
-            var = mean - norm.ppf(confidence_level) * std
-        elif method == 'monte_carlo':
-            # Simple Monte Carlo simulation
-            simulated_returns = np.random.normal(option_returns.mean(), 
-                                               option_returns.std(), 10000)
-            var_percentile = (1 - confidence_level) * 100
-            var = np.percentile(simulated_returns, var_percentile)
-        else:
-            var = np.percentile(option_returns, (1 - confidence_level) * 100)
-
-        return abs(var)
-    except Exception as e:
-        st.error(f"Error calculating options VaR: {str(e)}")
-        return 0
-
-def run_custom_stress_test(returns, vol_multiplier, correlation_shock, market_shock, confidence_level):
-    """Run custom stress test with user-defined parameters"""
-    try:
-        if returns.empty:
-            return None
-            
-        # Calculate baseline VaR
-        baseline_var = np.percentile(returns, (1 - confidence_level) * 100)
-        baseline_var = abs(baseline_var)
-        
-        # Apply stress scenarios
-        stressed_returns = returns.copy()
-        
-        # Volatility shock
-        if vol_multiplier != 1.0:
-            mean_return = stressed_returns.mean()
-            stressed_returns = (stressed_returns - mean_return) * vol_multiplier + mean_return
-        
-        # Market shock (shift all returns)
-        if market_shock != 0:
-            stressed_returns = stressed_returns + (market_shock / 100)
-        
-        # Calculate stressed VaR
-        stressed_var = np.percentile(stressed_returns, (1 - confidence_level) * 100)
-        stressed_var = abs(stressed_var)
-        
-        # Calculate metrics
-        var_increase = ((stressed_var - baseline_var) / baseline_var * 100) if baseline_var > 0 else 0
-        worst_case = np.min(stressed_returns)
-        
-        return {
-            'baseline_var': baseline_var,
-            'stressed_var': stressed_var,
-            'var_increase': var_increase,
-            'worst_case': abs(worst_case),
-            'stressed_returns': stressed_returns,
-            'scenario_description': f"Vol: {vol_multiplier:.1f}x, Market: {market_shock:+.1f}%, Corr: {correlation_shock:.1f}"
-        }
-        
-    except Exception as e:
-        st.error(f"Error in custom stress test: {str(e)}")
-        return None
-
 def safe_dataframe_display(df, title="Data", key_suffix=""):
     """Safely display dataframe with proper type handling for Arrow compatibility"""
     try:
@@ -705,13 +503,13 @@ def main():
                 try:
                     if portfolio_type == "Options Portfolio":
                         # Generate or load options data
-                        data = generate_option_synthetic_data(
+                        data = instances['options_fetcher'].generate_option_synthetic_data(
                             spot_price, strike_price, time_to_expiry, 
                             risk_free_rate, volatility, option_type_str.lower(), underlying,
                             num_days=max(500, required_days)
                         )
 
-                        if data is not None:
+                        if data is not None and not data.empty:
                             st.session_state.current_data = data
                             st.session_state.current_returns = data['Option_Price'].pct_change().dropna()
                             st.session_state.data_loaded = True
@@ -776,24 +574,28 @@ def main():
 
             # Calculate VaR based on selected model and portfolio type
             if portfolio_type == "Options Portfolio":
-                # Options-specific VaR calculation
-                if var_model == "Delta-Gamma Parametric":
-                    # Use Delta-Gamma VaR method
-                    params = st.session_state.option_params
-                    underlying_returns = st.session_state.current_data[params['underlying']].pct_change().dropna()
-                    var_result = calculate_delta_gamma_var(
-                        params['spot_price'], params['strike_price'], 
-                        params['time_to_expiry'], params['risk_free_rate'], 
-                        params['volatility'], params['option_type'], 
-                        confidence_level, underlying_returns
-                    )
-                else:
-                    var_result = calculate_options_var_comprehensive(
-                        var_portfolio_returns, confidence_level, var_model.lower().replace(' ', '_')
-                    )
-                expected_shortfall = calculate_options_var_comprehensive(
-                    var_portfolio_returns[var_portfolio_returns <= -var_result], 0.5, 'historical'
+                # Options-specific VaR calculation using the consolidated method
+                params = st.session_state.option_params
+                var_result_dict = instances['options_var'].calculate_portfolio_var(
+                    symbol=params['underlying'],
+                    spot_price=params['spot_price'],
+                    strike_price=params['strike_price'],
+                    time_to_expiry=params['time_to_expiry'],
+                    risk_free_rate=params['risk_free_rate'],
+                    volatility=params['volatility'],
+                    option_type=params['option_type'],
+                    quantity=params['quantity'],
+                    confidence_level=confidence_level,
+                    var_model=var_model
                 )
+                
+                if var_result_dict['success']:
+                    var_result = var_result_dict['var_dollar']
+                    expected_shortfall = var_result_dict['expected_shortfall']
+                else:
+                    var_result = 0
+                    expected_shortfall = 0
+                    st.error(f"Error calculating options VaR: {var_result_dict['error']}")
             else:
                 # Standard VaR calculation
                 if var_model == "Parametric (Delta-Normal)":
@@ -852,14 +654,14 @@ def main():
                 if hasattr(st.session_state, 'option_params') and st.session_state.option_params:
                     params = st.session_state.option_params
 
-                    # Calculate current option price and Greeks
-                    current_option_price = black_scholes_price(
+                    # Calculate current option price and Greeks using consolidated methods
+                    current_option_price = instances['options_var'].black_scholes_price(
                         params['spot_price'], params['strike_price'], 
                         params['time_to_expiry'], params['risk_free_rate'], 
                         params['volatility'], params['option_type']
                     )
 
-                    greeks = calculate_option_greeks(
+                    greeks = instances['options_var'].black_scholes_greeks(
                         params['spot_price'], params['strike_price'], 
                         params['time_to_expiry'], params['risk_free_rate'], 
                         params['volatility'], params['option_type']
@@ -1127,21 +929,23 @@ def main():
 
                 try:
                     if portfolio_type == "Options Portfolio" and not var_filtered_returns.empty:
-                        comparison_results['Historical'] = calculate_options_var_comprehensive(
+                        params = st.session_state.option_params
+                        
+                        # Use consolidated options VaR methods
+                        comparison_results['Historical'] = instances['options_var'].calculate_options_var_comprehensive(
                             var_filtered_returns, confidence_level, 'historical'
                         )
-                        comparison_results['Parametric'] = calculate_options_var_comprehensive(
+                        comparison_results['Parametric'] = instances['options_var'].calculate_options_var_comprehensive(
                             var_filtered_returns, confidence_level, 'parametric'
                         )
-                        comparison_results['Monte Carlo'] = calculate_options_var_comprehensive(
+                        comparison_results['Monte Carlo'] = instances['options_var'].calculate_options_var_comprehensive(
                             var_filtered_returns, confidence_level, 'monte_carlo'
                         )
                         
                         # Add Delta-Gamma if option params available
-                        if hasattr(st.session_state, 'option_params') and st.session_state.option_params:
-                            params = st.session_state.option_params
+                        if params:
                             underlying_returns = var_filtered_data[params['underlying']].pct_change().dropna()
-                            comparison_results['Delta-Gamma'] = calculate_delta_gamma_var(
+                            comparison_results['Delta-Gamma'] = instances['options_var'].calculate_delta_gamma_var(
                                 params['spot_price'], params['strike_price'], 
                                 params['time_to_expiry'], params['risk_free_rate'], 
                                 params['volatility'], params['option_type'], 
@@ -1373,11 +1177,9 @@ def main():
                         # Create a VaR function for backtesting
                         def var_function(returns, conf_level, horizon):
                             if portfolio_type == "Options Portfolio":
-                                if var_model == "Delta-Gamma Parametric":
-                                    # For backtesting, use simplified approach
-                                    return calculate_options_var_comprehensive(returns, conf_level, 'parametric')
-                                else:
-                                    return calculate_options_var_comprehensive(returns, conf_level, 'historical')
+                                return instances['options_var'].calculate_options_var_comprehensive(
+                                    returns, conf_level, 'historical'
+                                )
                             else:
                                 if var_model == "Parametric (Delta-Normal)":
                                     return instances['var_engines'].calculate_parametric_var(returns, conf_level, horizon)
@@ -1566,7 +1368,7 @@ def main():
 
                 if st.button("🔄 Run Custom Stress Test", key="run_custom_stress_button"):
                     with st.spinner("Running custom stress test..."):
-                        custom_stress_results = run_custom_stress_test(
+                        custom_stress_results = instances['stress_testing'].run_custom_stress_test(
                             stress_portfolio_returns, vol_multiplier, correlation_shock, market_shock, confidence_level
                         )
 
