@@ -111,7 +111,7 @@ class OptionsDataFetcher:
         
         return None
     
-    def generate_option_synthetic_data(self, symbol, current_price=None, num_days):
+    def generate_option_synthetic_data(self, symbol, current_price=None, num_days=252):
         """Generate realistic synthetic options data when live data fails"""
         if current_price is None:
             # Try to get current price, fallback to default
