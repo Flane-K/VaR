@@ -481,14 +481,14 @@ def main():
             use_custom = st.checkbox("Customize Parameters", key="custom_synthetic_checkbox")
 
             if use_custom:
-                num_days = st.slider("Number of Days", 100, 2000, max(500, required_days), key="synthetic_days_slider")
+                #num_days = st.slider("Number of Days", 100, 2000, max(500, required_days), key="synthetic_days_slider")
                 initial_price = st.number_input("Initial Price ($)", 10.0, 1000.0, 100.0, key="synthetic_price_input")
                 annual_return = st.slider("Annual Return", -0.5, 0.5, 0.08, 0.01, key="synthetic_return_slider")
                 annual_volatility = st.slider("Annual Volatility", 0.05, 1.0, 0.20, 0.01, key="synthetic_vol_slider")
                 random_seed = st.number_input("Random Seed", 1, 1000, 42, key="synthetic_seed_input")
             else:
                 # Default parameters for good representative data
-                num_days = max(500, required_days)
+                #num_days = max(500, required_days)
                 initial_price = 100.0
                 annual_return = 0.08
                 annual_volatility = 0.20
@@ -506,7 +506,6 @@ def main():
                         data = instances['options_fetcher'].generate_synthetic_option_data(
                             spot_price, strike_price, time_to_expiry, 
                             risk_free_rate, volatility, option_type_str.lower(), underlying,
-                            num_days=max(500, required_days)
                         )
 
                         if data is not None and not data.empty:
