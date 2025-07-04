@@ -370,8 +370,7 @@ def main():
                 [
                     "Historical Simulation",
                     "Parametric (Delta-Normal)", 
-                    "Monte Carlo",
-                    "Historic Simulation"
+                    "Monte Carlo"
                 ],
                 key="var_model_select"
             )
