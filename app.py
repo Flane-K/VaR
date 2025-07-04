@@ -356,7 +356,7 @@ def main():
                         except Exception as e:
                             st.error(f"Error fetching options data: {str(e)}")
                             st.info("Generating synthetic options data for demonstration.")
-                            options_data = instances['options_fetcher'].generate_synthetic_options_data(underlying, spot_price)
+                            options_data = instances['options_data_fetcher'].generate_synthetic_options_data(underlying, spot_price)
                             st.session_state.options_data = options_data
                             st.session_state.options_expirations = options_data.get('expiry_dates', [])
 
