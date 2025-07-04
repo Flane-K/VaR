@@ -1481,7 +1481,7 @@ def main():
                     st.info(f"**Data Points:** {len(st.session_state.current_returns)}")
                     if hasattr(st.session_state.current_returns, 'std'):
                         volatility = st.session_state.current_returns.std() * np.sqrt(252) * 100
-                        st.info(f"**Annualized Volatility:** {volatility:.2f}%")
+                        st.info(f"**Annualized Volatility:** {float(volatility):.2f}%")
                 else:
                     st.warning("No returns data available for export. Please load data first.")
 
