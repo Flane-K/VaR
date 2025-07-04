@@ -10,17 +10,11 @@ class DataIngestion:
         self.data = None
         self.returns = None
     
-    def load_live_data(self, symbols, start_date, end_date, min_data_points=None):
-        """Load live market data from Yahoo Finance with crypto support and sufficient data for backtesting"""
+    def load_live_data(self, symbols, start_date, end_date):
+        """Load live market data from Yahoo Finance with crypto support"""
         try:
             if isinstance(symbols, str):
                 symbols = [symbols]
-            
-            # Calculate required data points for backtesting
-            if min_data_points:
-                # Ensure we have enough data for backtesting
-                required_days = min_data_points + 100  # Add buffer for weekends/holidays
-                start_date = end_date - timedelta(days=required_days)
             
             # Separate crypto and regular symbols
             crypto_symbols = [s for s in symbols if '-USD' in s]
@@ -62,13 +56,6 @@ class DataIngestion:
                     st.warning(f"Error loading crypto symbols: {e}")
             
             if not all_data.empty:
-                # Ensure we have enough data points
-                if min_data_points and len(all_data) < min_data_points:
-                    st.warning(f"Insufficient data: got {len(all_data)} points, need {min_data_points}")
-                    # Try to get more data by extending the date range
-                    extended_start = start_date - timedelta(days=365)
-                    return self.load_live_data(symbols, extended_start, end_date, None)
-                
                 self.data = all_data
                 self.returns = self.data.pct_change().dropna()
                 return self.data
@@ -257,20 +244,4 @@ class DataIngestion:
             return self.load_live_data(all_symbols, start_date, end_date)
         except Exception as e:
             st.error(f"Error loading mixed portfolio: {str(e)}")
-            return None
-    
-    def get_sufficient_data_for_backtesting(self, symbols, backtest_days=198):
-        """Get sufficient data for backtesting requirements"""
-        try:
-            # Calculate required data points: backtesting days + window for VaR calculation + buffer
-            required_points = backtest_days + 252 + 50  # 500 total points for safety
-            
-            # Calculate start date to get enough data
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=required_points + 150)  # Add extra buffer for weekends/holidays
-            
-            return self.load_live_data(symbols, start_date, end_date, required_points)
-            
-        except Exception as e:
-            st.error(f"Error getting sufficient data for backtesting: {str(e)}")
             return None
