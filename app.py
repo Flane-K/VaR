@@ -508,7 +508,7 @@ def main():
                             risk_free_rate, volatility, option_type_str.lower(), underlying,
                         )
 
-                        if data is not None and not data.empty:
+                        if data is not None :
                             st.session_state.current_data = data
                             st.session_state.current_returns = data['Option_Price'].pct_change().dropna()
                             st.session_state.data_loaded = True
@@ -534,7 +534,7 @@ def main():
 
                         data = instances['data_ingestion'].load_live_data(symbols, extended_start, date_end)
 
-                        if data is not None and not data.empty:
+                        if data is not None:
                             st.session_state.current_data = data
                             st.session_state.current_returns = instances['data_ingestion'].returns
                             st.session_state.data_loaded = True
@@ -810,7 +810,7 @@ def main():
                             y=filtered_data['Option_Price'].values,
                             mode='lines',
                             name='Option Value',
-                            #line=dict(color='#00ff88', width=2)
+                            line=dict(color='#00ff88', width=2)
                         ))
 
                         fig_perf.update_layout(
@@ -833,7 +833,7 @@ def main():
                             y=cumulative_returns.values,
                             mode='lines',
                             name='Cumulative Returns',
-                            #line=dict(color='#00ff88', width=2)
+                            line=dict(color='#00ff88', width=2)
                         ))
 
                         fig_perf.update_layout(
