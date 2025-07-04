@@ -111,7 +111,7 @@ class OptionsDataFetcher:
         
         return None
     
-    def generate_synthetic_option_data(self, symbol, current_price=None):
+    '''def generate_synthetic_option_data(self, symbol, current_price=None):
         """Generate realistic synthetic options data when live data fails"""
         if current_price is None:
             # Try to get current price, fallback to default
@@ -232,6 +232,83 @@ class OptionsDataFetcher:
             }
         
         return options_data
+    '''
+
+def generate_synthetic_option_data(
+    self,
+    spot_price=150,
+    strike_price=None,
+    time_to_expiry=30,  # in days
+    risk_free_rate=0.05,
+    volatility=0.25,
+    option_type="call",
+    underlying="AAPL"
+):
+    """Generate synthetic option data for a given setup or fallback"""
+    
+    current_price = spot_price
+    
+    if strike_price is None:
+        strike_range = np.arange(
+            current_price * 0.8,
+            current_price * 1.2,
+            current_price * 0.025
+        )
+        strike_range = np.round(strike_range, 2)
+    else:
+        strike_range = np.round(np.arange(strike_price - 20, strike_price + 20, 2.5), 2)
+    
+    expiry_date = datetime.now().date() + timedelta(days=time_to_expiry)
+    time_to_expiry_years = time_to_expiry / 365.0
+    
+    options_data = {
+        'spot_price': current_price,
+        'expiry_date': expiry_date.strftime('%Y-%m-%d'),
+        'option_type': option_type.lower(),
+        'options': []
+    }
+
+    for strike in strike_range:
+        d1 = (np.log(current_price / strike) + (risk_free_rate + 0.5 * volatility**2) * time_to_expiry_years) / (volatility * np.sqrt(time_to_expiry_years))
+        d2 = d1 - volatility * np.sqrt(time_to_expiry_years)
+
+        if option_type.lower() == "call":
+            price = current_price * norm.cdf(d1) - strike * np.exp(-risk_free_rate * time_to_expiry_years) * norm.cdf(d2)
+            in_the_money = strike < current_price
+        else:
+            price = strike * np.exp(-risk_free_rate * time_to_expiry_years) * norm.cdf(-d2) - current_price * norm.cdf(-d1)
+            in_the_money = strike > current_price
+
+        spread_factor = 0.02
+        bid = max(0.01, price * (1 - spread_factor))
+        ask = price * (1 + spread_factor)
+
+        atm_factor = np.exp(-0.5 * ((strike - current_price) / (current_price * 0.1))**2)
+        volume = int(100 * atm_factor * np.random.uniform(0.5, 2.0))
+
+        contract = {
+            'contractSymbol': f"{underlying}{expiry_date.strftime('%Y%m%d')}{option_type[0].upper()}{int(strike*1000):08d}",
+            'strike': strike,
+            'lastPrice': round(price, 2),
+            'bid': round(bid, 2),
+            'ask': round(ask, 2),
+            'volume': volume,
+            'openInterest': volume * 2,
+            'impliedVolatility': round(volatility + np.random.uniform(-0.05, 0.05), 4),
+            'inTheMoney': in_the_money,
+            'contractSize': 'REGULAR',
+            'currency': 'USD'
+        }
+
+        options_data['options'].append(contract)
+
+    return options_data
+
+
+
+
+
+    
     
     def get_options_data(self, symbol, use_synthetic=False):
         """Main method to get options data with fallback to synthetic data"""
