@@ -342,7 +342,7 @@ def main():
                 if st.button("🔄 Fetch Options Data", key="fetch_options_button"):
                     with st.spinner("Fetching options data..."):
                         try:
-                            option_data_fetcher = instances['option_data_fetcher'].get_option_data_fetcher(underlying, use_synthetic=False)
+                            option_data_fetcher = instances['option_data_fetcher'].get_options_data(underlying, use_synthetic=False)
                             if option_data_fetcher and option_data_fetcher.get('options_chains'):
                                 st.session_state.option_data_fetcher = option_data_fetcher
                                 st.session_state.options_expirations = option_data_fetcher.get('expiry_dates', [])
