@@ -507,7 +507,7 @@ def main():
                             spot_price, strike_price, time_to_expiry, 
                             risk_free_rate, volatility, option_type_str.lower(), underlying,
                         )
-
+                        data = pd.DataFrame(data['options'])
                         if data is not None :
                             st.session_state.current_data = data
                             st.session_state.current_returns = (pd.DataFrame(data['options'])).pct_change().dropna()
