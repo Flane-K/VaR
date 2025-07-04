@@ -219,7 +219,7 @@ def main():
         'options_var': OptionsVaR(),
         'visualization': Visualization(),
         'utils': Utils(),
-        'options_fetcher': OptionsDataFetcher()
+        'option_data_fetcher': OptionsDataFetcher()
     }
 
     # Sidebar configuration
