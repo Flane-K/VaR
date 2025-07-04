@@ -503,7 +503,7 @@ def main():
                 try:
                     if portfolio_type == "Options Portfolio":
                         # Generate or load options data
-                        data = instances['options_data_fetcher'].generate_synthetic_option_data(
+                        data = instances['option_data_fetcher'].generate_synthetic_option_data(
                             spot_price, strike_price, time_to_expiry, 
                             risk_free_rate, volatility, option_type_str.lower(), underlying,
                         )
