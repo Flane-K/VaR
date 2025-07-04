@@ -8,6 +8,8 @@ from plotly.subplots import make_subplots
 import yfinance as yf
 from scipy.stats import norm
 import warnings
+import json
+import io
 warnings.filterwarnings('ignore')
 
 # Import custom modules
@@ -62,6 +64,13 @@ st.markdown("""
     .success-box {
         background-color: #6bcf7f20;
         border: 1px solid #6bcf7f;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
+    .feature-highlight {
+        background-color: #ff6b6b20;
+        border: 1px solid #ff6b6b;
         border-radius: 0.5rem;
         padding: 1rem;
         margin: 1rem 0;
@@ -127,6 +136,39 @@ def calculate_option_greeks(S, K, T, r, sigma, option_type='call'):
         }
     except:
         return {'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0}
+
+def calculate_delta_gamma_var(S, K, T, r, sigma, option_type, confidence_level, underlying_returns, portfolio_value=100000):
+    """Calculate Delta-Gamma VaR for options using Taylor expansion"""
+    try:
+        # Calculate Greeks
+        greeks = calculate_option_greeks(S, K, T, r, sigma, option_type)
+        delta = greeks['delta']
+        gamma = greeks['gamma']
+        
+        # Get underlying return statistics
+        if len(underlying_returns) == 0:
+            return 0
+            
+        underlying_vol = underlying_returns.std()
+        
+        # Calculate VaR percentile
+        z_score = norm.ppf(confidence_level)
+        
+        # Underlying price change for VaR calculation
+        delta_S = S * underlying_vol * z_score
+        
+        # Delta-Gamma approximation for option price change
+        # ΔP ≈ Δ × ΔS + 0.5 × Γ × (ΔS)²
+        option_price_change = delta * delta_S + 0.5 * gamma * (delta_S ** 2)
+        
+        # Convert to portfolio VaR
+        var_result = abs(option_price_change * portfolio_value / S)
+        
+        return var_result
+        
+    except Exception as e:
+        st.error(f"Error calculating Delta-Gamma VaR: {str(e)}")
+        return 0
 
 def generate_option_synthetic_data(S0, K, T, r, sigma, option_type, underlying_symbol, num_days=252):
     """Generate synthetic option price data using Black-Scholes"""
@@ -195,6 +237,49 @@ def calculate_options_var_comprehensive(option_returns, confidence_level, method
         st.error(f"Error calculating options VaR: {str(e)}")
         return 0
 
+def run_custom_stress_test(returns, vol_multiplier, correlation_shock, market_shock, confidence_level):
+    """Run custom stress test with user-defined parameters"""
+    try:
+        if returns.empty:
+            return None
+            
+        # Calculate baseline VaR
+        baseline_var = np.percentile(returns, (1 - confidence_level) * 100)
+        baseline_var = abs(baseline_var)
+        
+        # Apply stress scenarios
+        stressed_returns = returns.copy()
+        
+        # Volatility shock
+        if vol_multiplier != 1.0:
+            mean_return = stressed_returns.mean()
+            stressed_returns = (stressed_returns - mean_return) * vol_multiplier + mean_return
+        
+        # Market shock (shift all returns)
+        if market_shock != 0:
+            stressed_returns = stressed_returns + (market_shock / 100)
+        
+        # Calculate stressed VaR
+        stressed_var = np.percentile(stressed_returns, (1 - confidence_level) * 100)
+        stressed_var = abs(stressed_var)
+        
+        # Calculate metrics
+        var_increase = ((stressed_var - baseline_var) / baseline_var * 100) if baseline_var > 0 else 0
+        worst_case = np.min(stressed_returns)
+        
+        return {
+            'baseline_var': baseline_var,
+            'stressed_var': stressed_var,
+            'var_increase': var_increase,
+            'worst_case': abs(worst_case),
+            'stressed_returns': stressed_returns,
+            'scenario_description': f"Vol: {vol_multiplier:.1f}x, Market: {market_shock:+.1f}%, Corr: {correlation_shock:.1f}"
+        }
+        
+    except Exception as e:
+        st.error(f"Error in custom stress test: {str(e)}")
+        return None
+
 def safe_dataframe_display(df, title="Data", key_suffix=""):
     """Safely display dataframe with proper type handling for Arrow compatibility"""
     try:
@@ -254,6 +339,10 @@ def create_metrics_dataframe(metrics_dict, title="Metrics"):
     except Exception as e:
         st.error(f"Error creating metrics dataframe: {str(e)}")
         return pd.DataFrame()
+
+def calculate_required_data_days(backtesting_window, rolling_window=60, buffer_days=100):
+    """Calculate required data days for comprehensive analysis"""
+    return max(backtesting_window + rolling_window + buffer_days, 500)
 
 def initialize_session_state():
     """Initialize session state variables"""
@@ -347,17 +436,23 @@ def main():
             key="portfolio_type_select"
         )
 
-        # Data Source Selection (conditional - not shown for Options Portfolio)
-        if portfolio_type != "Options Portfolio":
+        # Data Source Selection for Options Portfolio (moved here)
+        if portfolio_type == "Options Portfolio":
+            st.subheader("📊 Data Source")
+            options_data_source = st.selectbox(
+                "Options Data Source",
+                ["Live Market Data", "Manual Entry"],
+                key="options_data_source_select"
+            )
+            data_source = "Options Data"
+        else:
+            # Data Source Selection for other portfolio types
             st.subheader("📊 Data Source")
             data_source = st.selectbox(
                 "Select Data Source",
                 ["Live Market Data", "Upload File", "Manual Entry", "Synthetic Data"],
                 key="data_source_select"
             )
-        else:
-            # For options portfolio, we'll handle data source internally
-            data_source = "Options Data"
 
         # Check for configuration changes and reset if needed
         reset_data_on_config_change(portfolio_type, data_source)
@@ -368,9 +463,11 @@ def main():
             var_model = st.selectbox(
                 "Select Options VaR Model",
                 [
+                    "Delta-Gamma Parametric",
                     "Historical Simulation",
                     "Parametric (Delta-Normal)", 
-                    "Monte Carlo"
+                    "Monte Carlo",
+                    "Historic Simulation"
                 ],
                 key="var_model_select"
             )
@@ -397,12 +494,21 @@ def main():
         confidence_level = st.slider("Confidence Level", 0.90, 0.99, 0.95, 0.01, key="confidence_slider")
         time_horizon = st.slider("Time Horizon (days)", 1, 30, 1, key="time_horizon_slider")
 
-        # Date Range (Default 1 year)
+        # Date Range with automatic extension for backtesting
         st.subheader("📅 Date Range")
         end_date = datetime.now()
-        start_date = end_date - timedelta(days=365)  # Default 1 year
-
-        date_start = st.date_input("Start Date", start_date, key="start_date_input")
+        
+        # Calculate required data period for backtesting
+        backtesting_window = st.slider("Backtesting Window", 100, 500, 252, key="backtesting_window_slider")
+        required_days = calculate_required_data_days(backtesting_window)
+        
+        # Auto-extend start date for sufficient backtesting data
+        auto_start_date = end_date - timedelta(days=required_days)
+        default_start_date = end_date - timedelta(days=365)  # Default 1 year for display
+        
+        st.info(f"💡 Auto-extending data to {required_days} days for comprehensive backtesting")
+        
+        date_start = st.date_input("Start Date (Display)", default_start_date, key="start_date_input")
         date_end = st.date_input("End Date", end_date, key="end_date_input")
 
         # Model-specific parameters
@@ -419,13 +525,6 @@ def main():
         if portfolio_type == "Options Portfolio":
             st.markdown('<div class="options-config">', unsafe_allow_html=True)
             st.subheader("📊 Options Configuration")
-
-            # Options data source selection
-            options_data_source = st.selectbox(
-                "Options Data Source",
-                ["Live Market Data", "Manual Entry"],
-                key="options_data_source_select"
-            )
 
             # Initialize default values for options parameters
             underlying = "AAPL"
@@ -584,14 +683,14 @@ def main():
             use_custom = st.checkbox("Customize Parameters", key="custom_synthetic_checkbox")
 
             if use_custom:
-                num_days = st.slider("Number of Days", 100, 2000, 500, key="synthetic_days_slider")
+                num_days = st.slider("Number of Days", 100, 2000, max(500, required_days), key="synthetic_days_slider")
                 initial_price = st.number_input("Initial Price ($)", 10.0, 1000.0, 100.0, key="synthetic_price_input")
                 annual_return = st.slider("Annual Return", -0.5, 0.5, 0.08, 0.01, key="synthetic_return_slider")
                 annual_volatility = st.slider("Annual Volatility", 0.05, 1.0, 0.20, 0.01, key="synthetic_vol_slider")
                 random_seed = st.number_input("Random Seed", 1, 1000, 42, key="synthetic_seed_input")
             else:
                 # Default parameters for good representative data
-                num_days = 500
+                num_days = max(500, required_days)
                 initial_price = 100.0
                 annual_return = 0.08
                 annual_volatility = 0.20
@@ -608,7 +707,8 @@ def main():
                         # Generate or load options data
                         data = generate_option_synthetic_data(
                             spot_price, strike_price, time_to_expiry, 
-                            risk_free_rate, volatility, option_type_str.lower(), underlying
+                            risk_free_rate, volatility, option_type_str.lower(), underlying,
+                            num_days=max(500, required_days)
                         )
 
                         if data is not None:
@@ -632,12 +732,8 @@ def main():
                             st.error("❌ Failed to generate options data")
 
                     elif data_source == "Live Market Data":
-                        # Calculate required data range for backtesting
-                        backtesting_window = st.session_state.get('backtesting_window', 252)
-                        required_days = backtesting_window + 100  # Extra buffer
-
-                        # Extend start date if needed for backtesting
-                        extended_start = min(date_start, date_end - timedelta(days=required_days))
+                        # Use auto-extended start date for sufficient backtesting data
+                        extended_start = auto_start_date
 
                         data = instances['data_ingestion'].load_live_data(symbols, extended_start, date_end)
 
@@ -647,7 +743,7 @@ def main():
                             st.session_state.data_loaded = True
                             st.session_state.symbols = symbols
                             st.session_state.weights = weights
-                            st.success(f"✅ Successfully loaded data for {len(symbols)} asset(s)")
+                            st.success(f"✅ Successfully loaded data for {len(symbols)} asset(s) ({len(data)} days)")
                         else:
                             st.error("❌ Failed to load market data")
 
@@ -681,9 +777,20 @@ def main():
             # Calculate VaR based on selected model and portfolio type
             if portfolio_type == "Options Portfolio":
                 # Options-specific VaR calculation
-                var_result = calculate_options_var_comprehensive(
-                    var_portfolio_returns, confidence_level, var_model.lower().replace(' ', '_')
-                )
+                if var_model == "Delta-Gamma Parametric":
+                    # Use Delta-Gamma VaR method
+                    params = st.session_state.option_params
+                    underlying_returns = st.session_state.current_data[params['underlying']].pct_change().dropna()
+                    var_result = calculate_delta_gamma_var(
+                        params['spot_price'], params['strike_price'], 
+                        params['time_to_expiry'], params['risk_free_rate'], 
+                        params['volatility'], params['option_type'], 
+                        confidence_level, underlying_returns
+                    )
+                else:
+                    var_result = calculate_options_var_comprehensive(
+                        var_portfolio_returns, confidence_level, var_model.lower().replace(' ', '_')
+                    )
                 expected_shortfall = calculate_options_var_comprehensive(
                     var_portfolio_returns[var_portfolio_returns <= -var_result], 0.5, 'historical'
                 )
@@ -731,19 +838,13 @@ def main():
             var_result = 0
             expected_shortfall = 0
 
-        # Create tabs - standardized to 8 tabs for both portfolio types
+        # Create tabs
         tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-            "📊 Options Dashboard" if portfolio_type == "Options Portfolio" else "📊 Dashboard", 
-            "📈 VaR Calculator", 
-            "📋 Data Overview", 
-            "🔄 Rolling Analysis", 
-            "🧪 Backtesting", 
-            "⚡ Stress Testing", 
-            "⬇️ Export Data", 
-            "❓ Help"
+            "📊 Dashboard", "📈 VaR Calculator", "📋 Data Overview", "🔄 Rolling Analysis", 
+            "🧪 Backtesting", "⚡ Stress Testing", "⬇️ Export Data", "❓ Help"
         ])
 
-        with tab1:  # Dashboard (Options Dashboard for options portfolio)
+        with tab1:  # Dashboard
             if portfolio_type == "Options Portfolio":
                 st.header("📊 Options Risk Analytics Dashboard")
 
@@ -861,9 +962,13 @@ def main():
                 with col4:
                     if len(st.session_state.current_returns) > 0:
                         current_vol = st.session_state.current_returns.std() * np.sqrt(252) * 100
+                        if hasattr(current_vol, 'iloc'):
+                            vol_value = current_vol.iloc[0] if len(current_vol) > 0 else current_vol
+                        else:
+                            vol_value = current_vol
                         st.metric(
                             label="Annualized Volatility",
-                            value=f"{current_vol.iloc[0]:.2f}%",
+                            value=f"{vol_value:.2f}%",
                             delta="Historical"
                         )
 
@@ -1031,6 +1136,18 @@ def main():
                         comparison_results['Monte Carlo'] = calculate_options_var_comprehensive(
                             var_filtered_returns, confidence_level, 'monte_carlo'
                         )
+                        
+                        # Add Delta-Gamma if option params available
+                        if hasattr(st.session_state, 'option_params') and st.session_state.option_params:
+                            params = st.session_state.option_params
+                            underlying_returns = var_filtered_data[params['underlying']].pct_change().dropna()
+                            comparison_results['Delta-Gamma'] = calculate_delta_gamma_var(
+                                params['spot_price'], params['strike_price'], 
+                                params['time_to_expiry'], params['risk_free_rate'], 
+                                params['volatility'], params['option_type'], 
+                                confidence_level, underlying_returns
+                            )
+                            
                     elif not var_filtered_returns.empty:
                         comparison_results['Parametric'] = instances['var_engines'].calculate_parametric_var(
                             var_filtered_returns, confidence_level, time_horizon
@@ -1213,7 +1330,8 @@ def main():
             # Backtesting parameters
             col1, col2 = st.columns(2)
             with col1:
-                backtesting_window = st.slider("Backtesting Window", 100, 500, 252, key="backtesting_window_slider")
+                # Use the backtesting window from sidebar
+                st.info(f"Using backtesting window: {backtesting_window} days")
             with col2:
                 backtesting_confidence = st.slider("Backtesting Confidence", 0.90, 0.99, 0.95, 0.01, key="backtesting_confidence_slider")
 
@@ -1243,13 +1361,23 @@ def main():
                 else:
                     backtest_portfolio_returns = backtest_filtered_returns
 
+            # Check data sufficiency
+            total_data_points = len(st.session_state.current_data)
+            required_points = backtesting_window + 50
+            
+            st.info(f"📊 Data Status: {total_data_points} total points, {required_points} required for backtesting")
+
             if st.button("🔄 Run Backtesting", key="run_backtesting_button"):
                 if len(backtest_portfolio_returns) >= backtesting_window + 50:
                     with st.spinner("Running backtesting..."):
                         # Create a VaR function for backtesting
                         def var_function(returns, conf_level, horizon):
                             if portfolio_type == "Options Portfolio":
-                                return calculate_options_var_comprehensive(returns, conf_level, 'historical')
+                                if var_model == "Delta-Gamma Parametric":
+                                    # For backtesting, use simplified approach
+                                    return calculate_options_var_comprehensive(returns, conf_level, 'parametric')
+                                else:
+                                    return calculate_options_var_comprehensive(returns, conf_level, 'historical')
                             else:
                                 if var_model == "Parametric (Delta-Normal)":
                                     return instances['var_engines'].calculate_parametric_var(returns, conf_level, horizon)
@@ -1304,7 +1432,8 @@ def main():
                                 )
                                 st.plotly_chart(fig_violations, use_container_width=True, key="backtesting_violations_chart")
                 else:
-                    st.error(f"Insufficient data for backtesting. Need at least {backtesting_window + 50} data points.")
+                    st.error(f"Insufficient data for backtesting. Need at least {backtesting_window + 50} data points. Current: {len(backtest_portfolio_returns)}")
+                    st.info("💡 Try loading data with a longer time period or reduce the backtesting window.")
 
         with tab6:  # Stress Testing
             st.header("⚡ Stress Testing")
@@ -1395,37 +1524,139 @@ def main():
                                 st.plotly_chart(fig_stress, use_container_width=True, key="stress_comparison_chart")
 
             else:  # Custom Stress Test
-                st.subheader("Custom Stress Parameters")
+                st.subheader("🎛️ Custom Stress Parameters")
+                
+                # Enhanced custom stress test interface
+                st.markdown('<div class="feature-highlight">', unsafe_allow_html=True)
+                st.write("**Design your own stress scenario by adjusting the parameters below:**")
+                st.markdown('</div>', unsafe_allow_html=True)
+                
                 col1, col2, col3 = st.columns(3)
 
                 with col1:
-                    vol_shock = st.slider("Volatility Shock (%)", 0, 500, 100, key="vol_shock_slider")
+                    vol_multiplier = st.slider("Volatility Multiplier", 0.5, 5.0, 1.0, 0.1, key="vol_multiplier_slider")
+                    st.caption(f"Current: {vol_multiplier:.1f}x normal volatility")
+                    
                 with col2:
-                    corr_shock = st.slider("Correlation Shock", 0.0, 1.0, 0.3, 0.1, key="corr_shock_slider")
+                    correlation_shock = st.slider("Correlation Shock", 0.0, 1.0, 0.3, 0.1, key="corr_shock_slider")
+                    st.caption(f"Correlation increase: +{correlation_shock:.1f}")
+                    
                 with col3:
-                    market_shock = st.slider("Market Shock (%)", -50, 50, -20, key="market_shock_slider")
+                    market_shock = st.slider("Market Shock (%)", -50, 50, -20, 1, key="market_shock_slider")
+                    st.caption(f"Market shift: {market_shock:+.0f}%")
+
+                # Additional stress parameters
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    liquidity_shock = st.slider("Liquidity Shock", 0.0, 2.0, 0.0, 0.1, key="liquidity_shock_slider")
+                    st.caption("Bid-ask spread multiplier")
+                    
+                with col2:
+                    tail_risk_multiplier = st.slider("Tail Risk Multiplier", 1.0, 3.0, 1.0, 0.1, key="tail_risk_slider")
+                    st.caption("Extreme event probability")
+
+                # Scenario description
+                st.subheader("📝 Scenario Description")
+                scenario_description = st.text_area(
+                    "Describe your stress scenario:",
+                    f"Custom stress test with {vol_multiplier:.1f}x volatility, {market_shock:+.0f}% market shock, and {correlation_shock:.1f} correlation increase.",
+                    key="scenario_description_input"
+                )
 
                 if st.button("🔄 Run Custom Stress Test", key="run_custom_stress_button"):
                     with st.spinner("Running custom stress test..."):
-                        custom_stress_results = instances['stress_testing'].run_custom_stress_test(
-                            stress_portfolio_returns, vol_shock, corr_shock, market_shock, confidence_level
+                        custom_stress_results = run_custom_stress_test(
+                            stress_portfolio_returns, vol_multiplier, correlation_shock, market_shock, confidence_level
                         )
 
                         if custom_stress_results:
-                            custom_stress_metrics = {
-                                'Baseline VaR': f"${custom_stress_results.get('baseline_var', 0):,.2f}",
-                                'Stressed VaR': f"${custom_stress_results.get('stressed_var', 0):,.2f}",
-                                'VaR Increase': f"{custom_stress_results.get('var_increase', 0):.2f}%",
-                                'Worst Case Loss': f"${custom_stress_results.get('worst_case', 0):,.2f}"
-                            }
-                            custom_stress_df = create_metrics_dataframe(custom_stress_metrics, "Custom Stress Results")
-                            safe_dataframe_display(custom_stress_df, "Custom Stress Results", "custom_stress_results")
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.subheader("Custom Stress Results")
+                                custom_stress_metrics = {
+                                    'Baseline VaR': f"${custom_stress_results.get('baseline_var', 0):,.2f}",
+                                    'Stressed VaR': f"${custom_stress_results.get('stressed_var', 0):,.2f}",
+                                    'VaR Increase': f"{custom_stress_results.get('var_increase', 0):.2f}%",
+                                    'Worst Case Loss': f"${custom_stress_results.get('worst_case', 0):,.2f}",
+                                    'Scenario': custom_stress_results.get('scenario_description', 'Custom')
+                                }
+                                custom_stress_df = create_metrics_dataframe(custom_stress_metrics, "Custom Stress Results")
+                                safe_dataframe_display(custom_stress_df, "Custom Stress Results", "custom_stress_results")
+
+                            with col2:
+                                st.subheader("Stress Impact Visualization")
+                                
+                                # Create comparison chart
+                                baseline_var = custom_stress_results.get('baseline_var', 0)
+                                stressed_var = custom_stress_results.get('stressed_var', 0)
+                                
+                                fig_custom_stress = go.Figure()
+                                
+                                fig_custom_stress.add_trace(go.Bar(
+                                    name='Baseline VaR',
+                                    x=['VaR'],
+                                    y=[baseline_var],
+                                    marker_color='#00ff88'
+                                ))
+                                
+                                fig_custom_stress.add_trace(go.Bar(
+                                    name='Stressed VaR',
+                                    x=['VaR'],
+                                    y=[stressed_var],
+                                    marker_color='#ff6b6b'
+                                ))
+                                
+                                fig_custom_stress.update_layout(
+                                    title="Custom Stress Test Impact",
+                                    yaxis_title="VaR ($)",
+                                    template="plotly_dark",
+                                    barmode='group'
+                                )
+                                
+                                st.plotly_chart(fig_custom_stress, use_container_width=True, key="custom_stress_chart")
+
+                            # Returns distribution comparison
+                            if 'stressed_returns' in custom_stress_results:
+                                st.subheader("Returns Distribution: Normal vs Stressed")
+                                
+                                fig_dist_comparison = go.Figure()
+                                
+                                # Original returns
+                                fig_dist_comparison.add_trace(go.Histogram(
+                                    x=stress_portfolio_returns,
+                                    name='Normal Returns',
+                                    opacity=0.7,
+                                    nbinsx=50,
+                                    marker_color='#00ff88'
+                                ))
+                                
+                                # Stressed returns
+                                fig_dist_comparison.add_trace(go.Histogram(
+                                    x=custom_stress_results['stressed_returns'],
+                                    name='Stressed Returns',
+                                    opacity=0.7,
+                                    nbinsx=50,
+                                    marker_color='#ff6b6b'
+                                ))
+                                
+                                fig_dist_comparison.update_layout(
+                                    title="Returns Distribution Comparison",
+                                    xaxis_title="Returns",
+                                    yaxis_title="Frequency",
+                                    template="plotly_dark",
+                                    barmode='overlay'
+                                )
+                                
+                                st.plotly_chart(fig_dist_comparison, use_container_width=True, key="stress_distribution_comparison")
 
         with tab7:  # Export Data
             st.header("⬇️ Export Data")
             
             st.markdown("""
-            Export your analysis data and results for further processing or reporting.
+            Export your analysis data and results for further analysis, reporting, or compliance purposes.
+            All exports include timestamps and comprehensive metadata.
             """)
 
             # Export options
@@ -1436,175 +1667,164 @@ def main():
                 if st.session_state.current_data is not None:
                     # Show data preview
                     st.write("**Data Preview:**")
-                    st.dataframe(st.session_state.current_data.head(), key="export_price_preview")
+                    safe_dataframe_display(st.session_state.current_data.head(), "Price Data Preview", "export_price_preview")
                     
-                    # Export button for price data
-                    csv_data = st.session_state.current_data.to_csv()
-                    st.download_button(
-                        label="📥 Download Price Data (CSV)",
-                        data=csv_data,
-                        file_name=f"price_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                        mime="text/csv",
-                        key="download_price_data"
-                    )
-                    
-                    # Data info
-                    st.info(f"**Data Points:** {len(st.session_state.current_data)}")
-                    st.info(f"**Date Range:** {st.session_state.current_data.index[0].strftime('%Y-%m-%d')} to {st.session_state.current_data.index[-1].strftime('%Y-%m-%d')}")
+                    # Export button
+                    if st.button("📥 Download Price Data (CSV)", key="export_price_data"):
+                        csv_buffer = io.StringIO()
+                        st.session_state.current_data.to_csv(csv_buffer)
+                        csv_data = csv_buffer.getvalue()
+                        
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        filename = f"price_data_{timestamp}.csv"
+                        
+                        st.download_button(
+                            label="💾 Download CSV",
+                            data=csv_data,
+                            file_name=filename,
+                            mime="text/csv",
+                            key="download_price_csv"
+                        )
                 else:
-                    st.warning("No price data available for export. Please load data first.")
+                    st.warning("No price data available for export")
 
             with col2:
                 st.subheader("📈 Returns Data Export")
                 if st.session_state.current_returns is not None:
                     # Show returns preview
                     st.write("**Returns Preview:**")
-                    if len(st.session_state.current_returns.shape) == 1:
-                        returns_df = pd.DataFrame({'Returns': st.session_state.current_returns})
-                    else:
-                        returns_df = pd.DataFrame(st.session_state.current_returns)
+                    returns_df = pd.DataFrame(st.session_state.current_returns)
+                    safe_dataframe_display(returns_df.head(), "Returns Data Preview", "export_returns_preview")
                     
-                    st.dataframe(returns_df.head(), key="export_returns_preview")
-                    
-                    # Export button for returns data
-                    csv_returns = returns_df.to_csv()
-                    st.download_button(
-                        label="📥 Download Returns Data (CSV)",
-                        data=csv_returns,
-                        file_name=f"returns_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                        mime="text/csv",
-                        key="download_returns_data"
-                    )
-                    
-                    # Returns info
-                    st.info(f"**Data Points:** {len(st.session_state.current_returns)}")
-                    if hasattr(st.session_state.current_returns, 'std'):
-                        volatility = st.session_state.current_returns.std() * np.sqrt(252) * 100
-                        st.info(f"**Annualized Volatility:** {float(volatility):.2f}%")
+                    # Export button
+                    if st.button("📥 Download Returns Data (CSV)", key="export_returns_data"):
+                        csv_buffer = io.StringIO()
+                        returns_df.to_csv(csv_buffer)
+                        csv_data = csv_buffer.getvalue()
+                        
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        filename = f"returns_data_{timestamp}.csv"
+                        
+                        st.download_button(
+                            label="💾 Download CSV",
+                            data=csv_data,
+                            file_name=filename,
+                            mime="text/csv",
+                            key="download_returns_csv"
+                        )
                 else:
-                    st.warning("No returns data available for export. Please load data first.")
+                    st.warning("No returns data available for export")
 
             # VaR Results Export
             st.subheader("🎯 VaR Results Export")
             if st.session_state.var_results:
-                # Create VaR results summary
-                var_summary = {
-                    'Export_Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'Portfolio_Type': portfolio_type,
-                    'VaR_Model': st.session_state.var_results.get('model', 'N/A'),
-                    'Value_at_Risk': st.session_state.var_results.get('var', 0),
-                    'Expected_Shortfall': st.session_state.var_results.get('expected_shortfall', 0),
-                    'Confidence_Level': st.session_state.var_results.get('confidence_level', 0),
-                    'Time_Horizon': time_horizon,
-                    'Assets': ', '.join(st.session_state.symbols) if st.session_state.symbols else 'N/A',
-                    'Weights': ', '.join([f"{w:.4f}" for w in st.session_state.weights]) if st.session_state.weights else 'N/A'
-                }
+                var_results_df = create_metrics_dataframe(st.session_state.var_results, "VaR Results")
+                safe_dataframe_display(var_results_df, "VaR Results Preview", "export_var_preview")
                 
-                # Add options-specific parameters if available
-                if portfolio_type == "Options Portfolio" and hasattr(st.session_state, 'option_params'):
-                    params = st.session_state.option_params
-                    var_summary.update({
-                        'Underlying_Symbol': params.get('underlying', 'N/A'),
-                        'Option_Type': params.get('option_type', 'N/A'),
-                        'Strike_Price': params.get('strike_price', 0),
-                        'Spot_Price': params.get('spot_price', 0),
-                        'Time_to_Expiry': params.get('time_to_expiry', 0),
-                        'Risk_Free_Rate': params.get('risk_free_rate', 0),
-                        'Volatility': params.get('volatility', 0),
-                        'Quantity': params.get('quantity', 0)
-                    })
-                
-                var_results_df = pd.DataFrame([var_summary])
-                
-                # Show VaR results preview
-                st.write("**VaR Results Preview:**")
-                st.dataframe(var_results_df, key="export_var_preview")
-                
-                # Export button for VaR results
-                csv_var_results = var_results_df.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download VaR Results (CSV)",
-                    data=csv_var_results,
-                    file_name=f"var_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv",
-                    key="download_var_results"
-                )
+                if st.button("📥 Download VaR Results (CSV)", key="export_var_results"):
+                    csv_buffer = io.StringIO()
+                    var_results_df.to_csv(csv_buffer, index=False)
+                    csv_data = csv_buffer.getvalue()
+                    
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"var_results_{timestamp}.csv"
+                    
+                    st.download_button(
+                        label="💾 Download CSV",
+                        data=csv_data,
+                        file_name=filename,
+                        mime="text/csv",
+                        key="download_var_csv"
+                    )
             else:
-                st.warning("No VaR results available for export. Please run VaR calculations first.")
+                st.warning("No VaR results available for export")
 
             # Portfolio Composition Export
+            st.subheader("💼 Portfolio Composition Export")
             if hasattr(st.session_state, 'symbols') and hasattr(st.session_state, 'weights'):
-                st.subheader("💼 Portfolio Composition Export")
-                portfolio_composition = pd.DataFrame({
+                portfolio_df = pd.DataFrame({
                     'Asset': st.session_state.symbols,
                     'Weight': st.session_state.weights,
                     'Weight_Percentage': [w*100 for w in st.session_state.weights]
                 })
                 
-                st.write("**Portfolio Composition Preview:**")
-                st.dataframe(portfolio_composition, key="export_portfolio_preview")
+                safe_dataframe_display(portfolio_df, "Portfolio Composition Preview", "export_portfolio_preview")
                 
-                csv_portfolio = portfolio_composition.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download Portfolio Composition (CSV)",
-                    data=csv_portfolio,
-                    file_name=f"portfolio_composition_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv",
-                    key="download_portfolio_composition"
-                )
-
-            # Export All Data
-            st.subheader("📦 Export All Data")
-            st.markdown("Download a comprehensive export containing all available data and results.")
-            
-            if st.button("📥 Prepare Complete Export", key="prepare_complete_export"):
-                try:
-                    # Create a comprehensive export
-                    export_data = {}
+                if st.button("📥 Download Portfolio Composition (CSV)", key="export_portfolio_composition"):
+                    csv_buffer = io.StringIO()
+                    portfolio_df.to_csv(csv_buffer, index=False)
+                    csv_data = csv_buffer.getvalue()
                     
-                    # Add price data
-                    if st.session_state.current_data is not None:
-                        export_data['price_data'] = st.session_state.current_data.to_dict()
-                    
-                    # Add returns data
-                    if st.session_state.current_returns is not None:
-                        if len(st.session_state.current_returns.shape) == 1:
-                            export_data['returns_data'] = st.session_state.current_returns.to_dict()
-                        else:
-                            export_data['returns_data'] = st.session_state.current_returns.to_dict()
-                    
-                    # Add VaR results
-                    if st.session_state.var_results:
-                        export_data['var_results'] = st.session_state.var_results
-                    
-                    # Add portfolio info
-                    export_data['portfolio_info'] = {
-                        'portfolio_type': portfolio_type,
-                        'symbols': st.session_state.symbols,
-                        'weights': st.session_state.weights,
-                        'export_timestamp': datetime.now().isoformat()
-                    }
-                    
-                    # Add options parameters if available
-                    if hasattr(st.session_state, 'option_params') and st.session_state.option_params:
-                        export_data['option_parameters'] = st.session_state.option_params
-                    
-                    # Convert to JSON for download
-                    import json
-                    json_export = json.dumps(export_data, indent=2, default=str)
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"portfolio_composition_{timestamp}.csv"
                     
                     st.download_button(
-                        label="📥 Download Complete Export (JSON)",
-                        data=json_export,
-                        file_name=f"complete_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                        mime="application/json",
-                        key="download_complete_export"
+                        label="💾 Download CSV",
+                        data=csv_data,
+                        file_name=filename,
+                        mime="text/csv",
+                        key="download_portfolio_csv"
                     )
-                    
-                    st.success("✅ Complete export prepared successfully!")
-                    
-                except Exception as e:
-                    st.error(f"❌ Error preparing complete export: {str(e)}")
+
+            # Complete Export (JSON)
+            st.subheader("📦 Complete Export")
+            st.write("Export all data and results in a comprehensive JSON format")
+            
+            if st.button("📥 Generate Complete Export", key="generate_complete_export"):
+                # Compile all available data
+                export_data = {
+                    'metadata': {
+                        'export_timestamp': datetime.now().isoformat(),
+                        'portfolio_type': portfolio_type,
+                        'data_source': data_source,
+                        'var_model': var_model,
+                        'confidence_level': confidence_level,
+                        'time_horizon': time_horizon
+                    },
+                    'price_data': st.session_state.current_data.to_dict() if st.session_state.current_data is not None else None,
+                    'returns_data': st.session_state.current_returns.to_dict() if st.session_state.current_returns is not None else None,
+                    'var_results': st.session_state.var_results,
+                    'portfolio_composition': {
+                        'symbols': st.session_state.symbols,
+                        'weights': st.session_state.weights
+                    }
+                }
+                
+                # Add options-specific data if available
+                if portfolio_type == "Options Portfolio" and hasattr(st.session_state, 'option_params'):
+                    export_data['options_parameters'] = st.session_state.option_params
+                
+                # Convert to JSON
+                json_data = json.dumps(export_data, indent=2, default=str)
+                
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"complete_export_{timestamp}.json"
+                
+                st.download_button(
+                    label="💾 Download Complete Export (JSON)",
+                    data=json_data,
+                    file_name=filename,
+                    mime="application/json",
+                    key="download_complete_json"
+                )
+
+            # Export Statistics
+            st.subheader("📊 Export Statistics")
+            if st.session_state.current_data is not None:
+                export_stats = {
+                    'Total Data Points': len(st.session_state.current_data),
+                    'Date Range': f"{st.session_state.current_data.index[0].strftime('%Y-%m-%d')} to {st.session_state.current_data.index[-1].strftime('%Y-%m-%d')}",
+                    'Portfolio Type': portfolio_type,
+                    'Number of Assets': len(st.session_state.symbols),
+                    'VaR Model': var_model,
+                    'Current VaR': f"${var_result:,.2f}" if 'var_result' in locals() else "Not calculated"
+                }
+                
+                if portfolio_type == "Options Portfolio":
+                    export_stats['Volatility'] = f"{st.session_state.current_returns.std() * np.sqrt(252) * 100:.2f}%" if st.session_state.current_returns is not None else "N/A"
+                
+                stats_df = create_metrics_dataframe(export_stats, "Export Statistics")
+                safe_dataframe_display(stats_df, "Export Statistics", "export_stats")
 
         with tab8:  # Help
             st.header("❓ Help & Documentation")
@@ -1617,7 +1837,7 @@ def main():
             ### 📊 Getting Started
             
             1. **Select Portfolio Type**: Choose from Single Asset, Multi-Asset, Crypto, or Options Portfolio
-            2. **Configure Data Source**: For non-options portfolios, select data source
+            2. **Configure Data Source**: Select appropriate data source for your analysis
             3. **Choose VaR Model**: Select from sophisticated VaR calculation methods
             4. **Set Parameters**: Configure confidence levels, time horizons, and other settings
             5. **Load Data**: Click the "Load Data" button to begin analysis
@@ -1644,26 +1864,39 @@ def main():
             
             ### 📈 VaR Models
             
-            {"#### Standard Models" if portfolio_type != "Options Portfolio" else "#### Options VaR Models"}
-            {"1. **Parametric (Delta-Normal)**: Classical normal distribution approach" if portfolio_type != "Options Portfolio" else "1. **Historical Simulation**: Non-parametric historical method"}
-            {"2. **Historical Simulation**: Non-parametric historical method" if portfolio_type != "Options Portfolio" else "2. **Parametric (Delta-Normal)**: Classical normal distribution approach"}
-            {"3. **Monte Carlo**: Simulation-based approach (1K-100K simulations)" if portfolio_type != "Options Portfolio" else "3. **Monte Carlo**: Simulation-based approach for options"}
-            {"4. **GARCH**: Advanced volatility modeling for time-varying risk" if portfolio_type != "Options Portfolio" else "4. **Historic Simulation**: Enhanced historical method for options"}
-            {"5. **Extreme Value Theory (EVT)**: Tail risk modeling for extreme events" if portfolio_type != "Options Portfolio" else ""}
+            {"#### Options VaR Models" if portfolio_type == "Options Portfolio" else "#### Standard Models"}
+            {"1. **Delta-Gamma Parametric**: Advanced options VaR using Taylor expansion with Greeks" if portfolio_type == "Options Portfolio" else "1. **Parametric (Delta-Normal)**: Classical normal distribution approach"}
+            {"2. **Historical Simulation**: Non-parametric historical method" if portfolio_type == "Options Portfolio" else "2. **Historical Simulation**: Non-parametric historical method"}
+            {"3. **Parametric (Delta-Normal)**: Classical normal distribution approach" if portfolio_type == "Options Portfolio" else "3. **Monte Carlo**: Simulation-based approach (1K-100K simulations)"}
+            {"4. **Monte Carlo**: Simulation-based approach for options" if portfolio_type == "Options Portfolio" else "4. **GARCH**: Advanced volatility modeling for time-varying risk"}
+            {"5. **Historic Simulation**: Enhanced historical method for options" if portfolio_type == "Options Portfolio" else "5. **Extreme Value Theory (EVT)**: Tail risk modeling for extreme events"}
             
-            ### ⬇️ Export Data
+            ### 🆕 New Features
             
-            The Export Data tab allows you to download:
-            - **Price Data**: Historical price data in CSV format
-            - **Returns Data**: Calculated returns data in CSV format
-            - **VaR Results**: Risk metrics and model results in CSV format
-            - **Portfolio Composition**: Asset weights and allocation in CSV format
-            - **Complete Export**: All data and results in JSON format
+            #### Enhanced Options Analysis
+            - **Delta-Gamma VaR**: Advanced parametric method using option Greeks
+            - **Real-time Greeks Calculation**: Delta, Gamma, Theta, Vega
+            - **Options Chain Integration**: Live market data support
+            
+            #### Improved Backtesting
+            - **Auto Data Extension**: Automatically fetches sufficient data for backtesting
+            - **Enhanced Validation**: Comprehensive model performance assessment
+            - **Basel Compliance**: Traffic light system for regulatory compliance
+            
+            #### Advanced Stress Testing
+            - **Custom Scenarios**: Design your own stress test parameters
+            - **Enhanced Visualizations**: Distribution comparisons and impact analysis
+            - **Multiple Shock Types**: Volatility, correlation, market, and liquidity shocks
+            
+            #### Comprehensive Export
+            - **Multiple Formats**: CSV for data, JSON for complete exports
+            - **Timestamped Files**: All exports include generation timestamps
+            - **Metadata Inclusion**: Complete analysis parameters and settings
             
             ### 🚨 Troubleshooting
             
             #### Common Issues
-            - **"Insufficient data"**: Increase historical window or data period
+            - **"Insufficient data"**: System auto-extends data period for backtesting
             - **"GARCH model failed"**: Requires minimum 100 observations
             - **"Symbol not found"**: Verify ticker format (add -USD for crypto)
             - **"Weights don't sum to 1"**: Portfolio weights are automatically normalized
@@ -1674,7 +1907,35 @@ def main():
             - **"Options chain empty"**: Try a different expiry date
             - **"Strike not available"**: System will find closest available strike
             - **"Time to expiry too short"**: Minimum 1 day required
+            - **"Delta-Gamma calculation failed"**: Check underlying data availability
+            
+            #### Performance Tips
+            - **Large Datasets**: Use date range filters for better performance
+            - **Monte Carlo**: Reduce simulations if processing is slow
+            - **Rolling Analysis**: Adjust window size based on data availability
+            - **Export Large Data**: Use CSV format for large datasets
             """)
+
+            # Feature suggestions
+            st.subheader("💡 Suggested Additional Features")
+            
+            st.markdown("""
+            <div class="feature-highlight">
+            <h4>🔮 Potential Enhancements</h4>
+            <ul>
+                <li><strong>Machine Learning VaR</strong>: LSTM/GRU models for time series prediction</li>
+                <li><strong>Real-time Monitoring</strong>: Live portfolio tracking with alerts</li>
+                <li><strong>Multi-currency Support</strong>: FX risk analysis and hedging</li>
+                <li><strong>Regulatory Reporting</strong>: Automated compliance report generation</li>
+                <li><strong>Portfolio Optimization</strong>: Mean-variance and risk parity optimization</li>
+                <li><strong>Credit Risk Integration</strong>: Corporate bond and credit default analysis</li>
+                <li><strong>ESG Risk Metrics</strong>: Environmental, social, governance risk factors</li>
+                <li><strong>Alternative Data</strong>: Sentiment analysis and news impact</li>
+                <li><strong>API Integration</strong>: Bloomberg, Refinitiv, and other data providers</li>
+                <li><strong>Mobile Dashboard</strong>: Responsive design for mobile devices</li>
+            </ul>
+            </div>
+            """, unsafe_allow_html=True)
 
     else:
         # Welcome screen when no data is loaded
@@ -1697,7 +1958,7 @@ def main():
             st.markdown("""
             <div class="metric-card">
                 <h3>📊 Advanced VaR Models</h3>
-                <p>5 sophisticated VaR calculation methods including Parametric, Historical, Monte Carlo, GARCH, and EVT</p>
+                <p>6 sophisticated VaR calculation methods including Delta-Gamma for options and EVT for tail risk</p>
             </div>
             """, unsafe_allow_html=True)
 
@@ -1705,7 +1966,7 @@ def main():
             st.markdown("""
             <div class="metric-card">
                 <h3>🔄 Real-time Analysis</h3>
-                <p>Dynamic updates across all tabs when parameters change, with intelligent data persistence</p>
+                <p>Dynamic updates with intelligent data management and automatic backtesting data extension</p>
             </div>
             """, unsafe_allow_html=True)
 
@@ -1713,7 +1974,7 @@ def main():
             st.markdown("""
             <div class="metric-card">
                 <h3>🧪 Comprehensive Testing</h3>
-                <p>Backtesting, stress testing, and scenario analysis with regulatory compliance metrics</p>
+                <p>Enhanced backtesting, custom stress testing, and regulatory compliance metrics</p>
             </div>
             """, unsafe_allow_html=True)
 
