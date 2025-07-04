@@ -510,7 +510,7 @@ def main():
 
                         if data is not None :
                             st.session_state.current_data = data
-                            st.session_state.current_returns = data['options'].pct_change().dropna()
+                            st.session_state.current_returns = (pd.DataFrame(data['options'])).pct_change().dropna()
                             st.session_state.data_loaded = True
                             st.session_state.symbols = [f"{underlying}_{option_type_str}_{strike_price}"]
                             st.session_state.weights = [1.0]
