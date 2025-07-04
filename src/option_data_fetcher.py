@@ -306,12 +306,8 @@ def generate_synthetic_option_data(
 
 
 
-
-
-    
-    
     def get_options_data(self, symbol, use_synthetic=False):
-        """Main method to get options data with fallback to synthetic data"""
+            """Main method to get options data with fallback to synthetic data"""
         if use_synthetic:
             st.info("Using synthetic options data for demonstration")
             return self.generate_synthetic_options_data(symbol)
@@ -321,8 +317,7 @@ def generate_synthetic_option_data(
         
         if options_data is None or not options_data.get('options_chains'):
             st.warning("Live options data unavailable. Generating synthetic data for demonstration.")
-            return self.generate_synthetic_options_data(symbol)
-        
+            return self.generate_synthetic_options_data(symbol) 
         return options_data
     
     def find_closest_atm_option(self, options_data, option_type='call', target_dte=None):
