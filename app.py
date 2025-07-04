@@ -810,7 +810,7 @@ def main():
                             y=filtered_data['Option_Price'].values,
                             mode='lines',
                             name='Option Value',
-                            line=dict(color='#00ff88', width=2)
+                            #line=dict(color='#00ff88', width=2)
                         ))
 
                         fig_perf.update_layout(
@@ -833,7 +833,7 @@ def main():
                             y=cumulative_returns.values,
                             mode='lines',
                             name='Cumulative Returns',
-                            line=dict(color='#00ff88', width=2)
+                            #line=dict(color='#00ff88', width=2)
                         ))
 
                         fig_perf.update_layout(
