@@ -8,7 +8,7 @@ A comprehensive Value at Risk (VaR) and risk analytics platform built with Strea
 - **Live Market Data**: Integration with Yahoo Finance for real-time market data
 - **Cryptocurrency Support**: Native support for crypto assets (BTC-USD, ETH-USD, etc.)
 - **Options Data**: Live options chain fetching with automatic ATM selection
-- **File Upload**: Support for CSV/XLSX file uploads with flexible formatting
+- **File Upload**: Support for CSV/XLSX file uploads
 - **Synthetic Data Generation**: Create realistic market data for testing and analysis
 - **Manual Entry**: Direct data input for custom portfolios and options
 - **Portfolio Types**: Single asset, multi-asset, crypto portfolio, and options portfolios
