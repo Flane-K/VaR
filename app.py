@@ -29,7 +29,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for dark theme
+# CSS for dark theme
 st.markdown("""
 <style>
     .main-header {
@@ -134,7 +134,7 @@ def generate_option_synthetic_data(S0, K, T, r, sigma, option_type, underlying_s
         dates = pd.date_range(start=datetime.now() - timedelta(days=num_days), 
                              end=datetime.now(), freq='D')
         
-        # Generate underlying price path using GBM
+        
         dt = 1/252
         returns = np.random.normal((r - 0.5 * sigma**2) * dt, sigma * np.sqrt(dt), num_days)
         
