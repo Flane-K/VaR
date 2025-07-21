@@ -1511,7 +1511,7 @@ def main():
         <div style="text-align: center; padding: 2rem;">
             <h2>🚀 Welcome to the VaR & Risk Analytics Platform</h2>
             <p style="font-size: 1.2rem; color: #888;">
-                Professional risk management tools for modern financial markets
+                Risk management tool for modern financial markets
             </p>
             <p style="margin-top: 2rem;">
                 👈 Configure your portfolio and data source in the sidebar, then click "Load Data" to begin analysis.
